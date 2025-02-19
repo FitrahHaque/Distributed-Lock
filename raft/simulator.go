@@ -162,7 +162,7 @@ func (nc *ClusterSimulator) Shutdown() {
 func (nc *ClusterSimulator) collectCommits(i uint64) error {
 	for commit := range nc.commitChans[i] {
 		nc.mu.Lock()
-		fmt.Printf("Collect Commits from node %d, entry: %+v\n", i, commit)
+		// fmt.Printf("Collect Commits from node %d, entry: %+v\n", i, commit)
 		logtest(i, "collectCommits (%d) got %+v", i, commit)
 		switch v := commit.Command.(type) {
 		case Read:
