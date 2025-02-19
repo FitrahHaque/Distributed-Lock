@@ -145,7 +145,7 @@ func (node *Node) sendCommit() {
 		}
 		node.mu.Unlock()
 		for i, entry := range pendingCommitEntries {
-			fmt.Printf("Commited entry for node Id: %d, entry: %v\n", node.id, entry.Command)
+			// fmt.Printf("Commited entry for node Id: %d, entry: %v\n", node.id, entry.Command)
 			node.commitChan <- CommitEntry{
 				Command: entry.Command,
 				Index:   lastAppliedSaved + uint64(i) + 1,
@@ -510,11 +510,11 @@ func (node *Node) Submit(command interface{}) (bool, interface{}, error) {
 	if node.state == Leader {
 		switch v := command.(type) {
 		case Read:
-			fmt.Printf("READ v: %v", v)
+			// fmt.Printf("READ v: %v", v)
 			key := v.Key
 			var value int
 			readErr := node.readFromStorage(key, &value)
-			fmt.Printf("key, value = %v, %v\n", key, value)
+			// fmt.Printf("key, value = %v, %v\n", key, value)
 			node.mu.Unlock()
 			return true, value, readErr
 		case AddServers:
