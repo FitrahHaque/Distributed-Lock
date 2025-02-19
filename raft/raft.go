@@ -245,7 +245,7 @@ func (node *Node) startElection() {
 }
 
 func (node *Node) becomeLeader() {
-	fmt.Printf("Calling becomeLeader() by %d\n", node.id)
+	// fmt.Printf("Calling becomeLeader() by %d\n", node.id)
 	node.state = Leader
 	for peer := range node.peerList.peerSet {
 		node.nextIndex[peer] = uint64(len(node.log)) + 1
@@ -580,7 +580,7 @@ func (node *Node) Submit(command interface{}) (bool, interface{}, error) {
 	} else {
 		switch v := command.(type) {
 		case Read:
-			fmt.Printf("READ v: %v", v)
+			// fmt.Printf("READ v: %v", v)
 			key := v.Key
 			var value int
 			readErr := node.readFromStorage(key, &value)
