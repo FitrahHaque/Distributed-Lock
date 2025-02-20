@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 	"sync"
@@ -69,18 +70,20 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
-type AppliedEntriesArgs struct {
+type AppendEntriesArgs struct {
 	Term         uint64
 	LeaderId     uint64
-	PrevLogIndex uint64
-	PrevLogTerm  uint64
+	LastLogIndex uint64
+	LastLogTerm  uint64
 	Entries      []LogEntry
 	LeaderCommit uint64
 }
 
-type AppliedEntriesReply struct {
-	Term    uint64
-	Success bool
+type AppendEntriesReply struct {
+	Term          uint64
+	Success       bool
+	RecoveryIndex uint64
+	RecoveryTerm  uint64
 }
 
 func (rn *Node) debug(format string, args ...interface{}) {
@@ -158,7 +161,9 @@ func (node *Node) sendCommit() {
 // study
 func (node *Node) runElectionTimer() {
 	timeoutDuration := node.electionTimeout()
+	node.mu.Lock()
 	termStarted := node.currentTerm
+	node.mu.Unlock()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -311,23 +316,23 @@ func (node *Node) leaderSendAppendEntries() {
 		go func(peer uint64) {
 			node.mu.Lock()
 			nextIndexSaved := node.nextIndex[peer]
-			prevLogIndexSaved := nextIndexSaved - 1
-			prevLogTerm := uint64(0)
-			if prevLogIndexSaved > 0 {
-				prevLogTerm = node.log[prevLogIndexSaved-1].Term
+			lastLogIndexSaved := nextIndexSaved - 1
+			lastLogTermSaved := uint64(0)
+			if lastLogIndexSaved > 0 {
+				lastLogTermSaved = node.log[lastLogIndexSaved-1].Term
 			}
 			entries := node.log[nextIndexSaved-1:]
 			// fmt.Printf("[LeaderSendAppendEntries peer %d] entries size: %d\n", peer, len(entries))
-			args := AppliedEntriesArgs{
+			args := AppendEntriesArgs{
 				Term:         leadershipTerm,
 				LeaderId:     node.id,
-				PrevLogIndex: prevLogIndexSaved,
-				PrevLogTerm:  prevLogTerm,
+				LastLogIndex: lastLogIndexSaved,
+				LastLogTerm:  lastLogTermSaved,
 				Entries:      entries,
 				LeaderCommit: node.commitLength,
 			}
 			node.mu.Unlock()
-			var reply AppliedEntriesReply
+			var reply AppendEntriesReply
 			if err := node.server.RPC(peer, "RaftNode.AppendEntries", args, &reply); err == nil {
 				node.mu.Lock()
 				defer node.mu.Unlock()
@@ -359,7 +364,22 @@ func (node *Node) leaderSendAppendEntries() {
 							node.trigger <- struct{}{}
 						}
 					} else {
-						//should it not be in a loop until we get a success?
+						if reply.RecoveryTerm == 0 {
+							node.nextIndex[peer] = reply.RecoveryIndex
+						} else {
+							lastLogIndexSaved = uint64(0)
+							for i := uint64(len(node.log)); i > 0; i-- {
+								if node.log[i-1].Term == reply.RecoveryTerm {
+									lastLogIndexSaved = i
+									break
+								}
+							}
+							if lastLogIndexSaved == 0 {
+								node.nextIndex[peer] = reply.RecoveryIndex
+							} else {
+								node.nextIndex[peer] = lastLogIndexSaved + 1
+							}
+						}
 					}
 				}
 			}
@@ -376,7 +396,7 @@ func (node *Node) lastLogIndexAndTerm() (uint64, uint64) {
 	return 0, 0
 }
 
-func (node *Node) AppendEntries(args AppliedEntriesArgs, reply *AppliedEntriesReply) error {
+func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) error {
 	node.mu.Lock()
 	defer node.mu.Unlock()
 
@@ -392,13 +412,27 @@ func (node *Node) AppendEntries(args AppliedEntriesArgs, reply *AppliedEntriesRe
 			node.becomeFollower(args.Term)
 		}
 		node.electionResetEvent = time.Now()
-		if args.PrevLogIndex == 0 ||
-			args.PrevLogIndex <= uint64(len(node.log)) && args.PrevLogTerm == node.log[args.PrevLogIndex-1].Term {
+		if args.LastLogIndex == 0 ||
+			args.LastLogIndex <= uint64(len(node.log)) && args.LastLogTerm == node.log[args.LastLogIndex-1].Term {
 			reply.Success = true
-			node.log = append(node.log[:args.PrevLogIndex], args.Entries...)
+			node.log = append(node.log[:args.LastLogIndex], args.Entries...)
 			if args.LeaderCommit > node.commitLength {
-				node.commitLength = args.LeaderCommit
+				node.commitLength = uint64(math.Min(float64(args.LeaderCommit), float64((len(node.log)))))
 				node.newCommitReady <- struct{}{}
+			}
+		}
+	} else {
+		if args.LastLogIndex > uint64(len(node.log)) {
+			reply.RecoveryIndex = uint64(len(node.log)) + 1
+			reply.RecoveryTerm = 0
+		} else {
+			reply.RecoveryTerm = node.log[args.LastLogIndex-1].Term
+			reply.RecoveryIndex = 1
+			for i := args.LastLogIndex - 1; i > 0; i-- {
+				if node.log[i-1].Term != reply.RecoveryTerm {
+					reply.RecoveryIndex = i + 1
+					break
+				}
 			}
 		}
 	}
@@ -584,7 +618,7 @@ func (node *Node) Submit(command interface{}) (bool, interface{}, error) {
 			key := v.Key
 			var value int
 			readErr := node.readFromStorage(key, &value)
-			fmt.Printf("key, value = %v, %v\n", key, value)
+			// fmt.Printf("key, value = %v, %v\n", key, value)
 			node.mu.Unlock()
 			return true, value, readErr
 		}
