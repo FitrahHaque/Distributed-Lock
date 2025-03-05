@@ -175,6 +175,7 @@ func (nc *ClusterSimulator) collectCommits(i uint64) error {
 				nc.mu.Unlock()
 				return err
 			}
+			// fmt.Printf("Set key: %s, value: %d\n", v.Key, v.Val)
 			nc.dbCluster[i].Set(v.Key, buf.Bytes()) // Save the data to the database
 		case RemoveServers:
 			serverIds := v.ServerIds
@@ -199,6 +200,7 @@ func (nc *ClusterSimulator) collectCommits(i uint64) error {
 				}
 			}
 		default:
+			// fmt.Printf("default\n")
 			break
 		}
 		nc.commits[i] = append(nc.commits[i], commit)
@@ -232,7 +234,7 @@ func (nc *ClusterSimulator) ReconnectPeer(id uint64) error {
 		return fmt.Errorf("invalid server id passed")
 	}
 	logtest(id, "Reconnect %d", id)
-
+	fmt.Printf("Reconnect %d\n", id)
 	for i := range nc.activeServers.peerSet {
 		if i != id && nc.isAlive[i] {
 			err := nc.raftCluster[id].ConnectToPeer(i, nc.raftCluster[i].GetListenerAddr())
@@ -498,7 +500,6 @@ func (nc *ClusterSimulator) SubmitToServer(serverId int, cmd interface{}) (bool,
 		}
 
 		close(ready)
-
 		nc.mu.Unlock()
 		return nc.raftCluster[uint64(serverId)].node.Submit(cmd)
 	case RemoveServers:

@@ -46,7 +46,7 @@ type Node struct {
 	trigger        chan struct{}
 
 	currentTerm uint64
-	votedFor    int
+	votedFor    int64
 	log         []LogEntry
 
 	commitLength       uint64
@@ -120,6 +120,7 @@ func CreateNode(
 		matchedIndex:       make(map[uint64]uint64),
 	}
 	if node.db.HasData() {
+		// fmt.Printf("db has data Restoring from storage on node: %d\n", node.id)
 		node.restoreFromStorage()
 	}
 
@@ -128,6 +129,7 @@ func CreateNode(
 		node.mu.Lock()
 		node.electionResetEvent = time.Now()
 		node.mu.Unlock()
+		// fmt.Printf("Starting election timer on node: %d\n", node.id)
 		node.runElectionTimer()
 	}()
 
@@ -158,7 +160,6 @@ func (node *Node) sendCommit() {
 	}
 }
 
-// study
 func (node *Node) runElectionTimer() {
 	timeoutDuration := node.electionTimeout()
 	node.mu.Lock()
@@ -195,14 +196,13 @@ func (node *Node) electionTimeout() time.Duration {
 	}
 }
 
-// study
 func (node *Node) startElection() {
-	// fmt.Printf("Calling startElection() by %d\n", node.id)
+	fmt.Printf("Calling startElection() by %d with peers: %v\n", node.id, node.peerList)
 	node.state = Candidate
 	node.currentTerm += 1
 	candidacyTerm := node.currentTerm
 	node.electionResetEvent = time.Now()
-	node.votedFor = int(node.id)
+	node.votedFor = int64(node.id)
 	votesReceived := 1
 	go func() {
 		node.mu.Lock()
@@ -274,7 +274,6 @@ func (node *Node) becomeLeader() {
 				} else {
 					return
 				}
-				//study
 				if !timer.Stop() {
 					<-timer.C
 				}
@@ -316,17 +315,18 @@ func (node *Node) leaderSendAppendEntries() {
 		go func(peer uint64) {
 			node.mu.Lock()
 			nextIndexSaved := node.nextIndex[peer]
-			lastLogIndexSaved := nextIndexSaved - 1
+			lastLogIndexSaved := int(nextIndexSaved) - 1
 			lastLogTermSaved := uint64(0)
 			if lastLogIndexSaved > 0 {
 				lastLogTermSaved = node.log[lastLogIndexSaved-1].Term
 			}
 			entries := node.log[nextIndexSaved-1:]
+			// fmt.Printf("nextIndexSaved is %d and lastLogIndexSaved is %d for peer %d from node %d on term %d\n", nextIndexSaved, uint64(lastLogIndexSaved), peer, node.id, node.currentTerm)
 			// fmt.Printf("[LeaderSendAppendEntries peer %d] entries size: %d\n", peer, len(entries))
 			args := AppendEntriesArgs{
 				Term:         leadershipTerm,
 				LeaderId:     node.id,
-				LastLogIndex: lastLogIndexSaved,
+				LastLogIndex: uint64(lastLogIndexSaved),
 				LastLogTerm:  lastLogTermSaved,
 				Entries:      entries,
 				LeaderCommit: node.commitLength,
@@ -348,8 +348,8 @@ func (node *Node) leaderSendAppendEntries() {
 						for i := node.commitLength + 1; i <= uint64(len(node.log)); i++ {
 							if node.log[i-1].Term == node.currentTerm {
 								matchCount := 1
-								for peer := range node.peerList.peerSet {
-									if node.matchedIndex[peer] >= i {
+								for p := range node.peerList.peerSet {
+									if node.matchedIndex[p] >= i {
 										matchCount++
 									}
 								}
@@ -367,17 +367,17 @@ func (node *Node) leaderSendAppendEntries() {
 						if reply.RecoveryTerm == 0 {
 							node.nextIndex[peer] = reply.RecoveryIndex
 						} else {
-							lastLogIndexSaved = uint64(0)
+							lastLogIndex := uint64(0)
 							for i := uint64(len(node.log)); i > 0; i-- {
 								if node.log[i-1].Term == reply.RecoveryTerm {
-									lastLogIndexSaved = i
+									lastLogIndex = i
 									break
 								}
 							}
-							if lastLogIndexSaved == 0 {
+							if lastLogIndex == 0 {
 								node.nextIndex[peer] = reply.RecoveryIndex
 							} else {
-								node.nextIndex[peer] = lastLogIndexSaved + 1
+								node.nextIndex[peer] = lastLogIndex + 1
 							}
 						}
 					}
@@ -416,22 +416,41 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesRepl
 			args.LastLogIndex <= uint64(len(node.log)) && args.LastLogTerm == node.log[args.LastLogIndex-1].Term {
 			reply.Success = true
 			node.log = append(node.log[:args.LastLogIndex], args.Entries...)
+			for _, entry := range args.Entries {
+				cmd := entry.Command
+				switch v := cmd.(type) {
+				case AddServers:
+					for _, peerId := range v.ServerIds {
+						if node.id == uint64(peerId) || node.peerList.Exists(uint64(peerId)) {
+							continue
+						}
+						node.peerList.Add(uint64(peerId))
+					}
+				case RemoveServers:
+					for _, peerId := range v.ServerIds {
+						if node.id == uint64(peerId) || !node.peerList.Exists(uint64(peerId)) {
+							continue
+						}
+						node.peerList.Remove(uint64(peerId))
+					}
+				}
+			}
 			if args.LeaderCommit > node.commitLength {
 				node.commitLength = uint64(math.Min(float64(args.LeaderCommit), float64((len(node.log)))))
 				node.newCommitReady <- struct{}{}
 			}
-		}
-	} else {
-		if args.LastLogIndex > uint64(len(node.log)) {
-			reply.RecoveryIndex = uint64(len(node.log)) + 1
-			reply.RecoveryTerm = 0
 		} else {
-			reply.RecoveryTerm = node.log[args.LastLogIndex-1].Term
-			reply.RecoveryIndex = 1
-			for i := args.LastLogIndex - 1; i > 0; i-- {
-				if node.log[i-1].Term != reply.RecoveryTerm {
-					reply.RecoveryIndex = i + 1
-					break
+			if args.LastLogIndex > uint64(len(node.log)) {
+				reply.RecoveryIndex = uint64(len(node.log)) + 1
+				reply.RecoveryTerm = 0
+			} else {
+				reply.RecoveryTerm = node.log[args.LastLogIndex-1].Term
+				reply.RecoveryIndex = 1
+				for i := args.LastLogIndex - 1; i > 0; i-- {
+					if node.log[i-1].Term != reply.RecoveryTerm {
+						reply.RecoveryIndex = i + 1
+						break
+					}
 				}
 			}
 		}
@@ -465,10 +484,10 @@ func (node *Node) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) err
 	// fmt.Printf("args.LastLogIndex, lastLogindex): (%v, %v)\n\n", args.LastLogIndex, lastLogIndex)
 
 	if args.Term == node.currentTerm &&
-		(node.votedFor == -1 || node.votedFor == int(args.CandidateId)) &&
+		(node.votedFor == -1 || node.votedFor == int64(args.CandidateId)) &&
 		(args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)) {
 		reply.VoteGranted = true
-		node.votedFor = int(args.CandidateId)
+		node.votedFor = int64(args.CandidateId)
 		node.electionResetEvent = time.Now()
 	} else {
 		reply.VoteGranted = false
@@ -505,13 +524,14 @@ func (node *Node) persistToStorage() {
 }
 
 func (node *Node) restoreFromStorage() {
+	fmt.Printf("Restoring from storage on node: %d\n", node.id)
 	for _, data := range []struct {
 		name  string
 		value interface{}
 	}{
-		{"currentTerm", node.currentTerm},
-		{"votedFor", node.votedFor},
-		{"log", node.log},
+		{"currentTerm", &node.currentTerm},
+		{"votedFor", &node.votedFor},
+		{"log", &node.log},
 	} {
 		if value, found := node.db.Get(data.name); found {
 			dec := gob.NewDecoder(bytes.NewBuffer(value))
@@ -525,6 +545,7 @@ func (node *Node) restoreFromStorage() {
 }
 
 func (node *Node) readFromStorage(key string, reply interface{}) error {
+	// fmt.Printf("Reading from storage on node: %d\n", node.id)
 	if value, found := node.db.Get(key); found {
 		dec := gob.NewDecoder(bytes.NewBuffer(value))
 		if err := dec.Decode(reply); err != nil {
@@ -539,7 +560,7 @@ func (node *Node) readFromStorage(key string, reply interface{}) error {
 
 func (node *Node) Submit(command interface{}) (bool, interface{}, error) {
 	node.mu.Lock()
-	// fmt.Printf("[Submit %d] %v\n", node.id, command)
+	fmt.Printf("[Submit %d] %v\n", node.id, command)
 	// fmt.Printf("Running Submit on node %d (leader, term = %v %v)\n", node.id, node.state == Leader, node.currentTerm)
 	if node.state == Leader {
 		switch v := command.(type) {
@@ -560,13 +581,13 @@ func (node *Node) Submit(command interface{}) (bool, interface{}, error) {
 					return false, nil, errors.New("server with given serverID already exists")
 				}
 			}
+			fmt.Printf("AddServers command: %v\n", command)
 			node.log = append(node.log, LogEntry{
 				Command: command,
 				Term:    node.currentTerm,
 			})
 			for i := 0; i < len(serverIds); i++ {
 				node.peerList.Add(uint64(serverIds[i]))
-				node.server.peerList.Add(uint64(serverIds[i]))
 				node.nextIndex[uint64(serverIds[i])] = uint64(len(node.log)) + 1
 				node.matchedIndex[uint64(serverIds[i])] = 0
 			}
@@ -590,7 +611,6 @@ func (node *Node) Submit(command interface{}) (bool, interface{}, error) {
 			for i := 0; i < len(serverIds); i++ {
 				if node.id != uint64(serverIds[i]) {
 					node.peerList.Remove(uint64(serverIds[i]))
-					node.server.peerList.Remove(uint64(serverIds[i]))
 				}
 			}
 			node.persistToStorage()
