@@ -119,6 +119,7 @@ func (server *Server) ConnectToPeer(peerId uint64, addr net.Addr) error {
 	server.mu.Lock()
 	defer server.mu.Unlock()
 	if server.peers[peerId] == nil {
+		fmt.Printf("[%d] Connecting to peer %d at %v: (%v, %v)\n", server.id, peerId, addr, addr.Network(), addr.String())
 		peer, err := rpc.Dial(addr.Network(), addr.String())
 		if err != nil {
 			return err
