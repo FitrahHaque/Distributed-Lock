@@ -39,3 +39,16 @@ func (db *Database) HasData() bool {
 	defer db.mu.Unlock()
 	return len(db.kv) > 0
 }
+
+func (db *Database) Delete(key string) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	delete(db.kv, key)
+}
+
+func (db *Database) Exists(key string) bool {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, ok := db.kv[key]
+	return ok
+}

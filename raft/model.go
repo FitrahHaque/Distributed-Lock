@@ -1,9 +1,51 @@
 package raft
 
 import (
+	"net"
+	"net/rpc"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
+
+type LockCommandType int
+
+const FENCING_TOKEN_PREFIX string = "fencing_token"
+
+const (
+	LockAcquire LockCommandType = iota
+	LockRelease
+)
+
+type FencingToken struct {
+	Key   string
+	Value uint64
+}
+type LockCommand struct {
+	CommandType  LockCommandType
+	Key          string
+	ClientID     string
+	TTL          time.Duration
+	FencingToken FencingToken
+}
+
+type LockInfo struct {
+	Holder     string
+	ExpiryTime time.Time
+}
+
+type LockAcquireRequest struct {
+	CommandType LockCommandType
+	Key         string
+	ClientID    string
+	TTL         time.Duration
+}
+
+type LockAcquireReply struct {
+	Success      bool         `json:"success"`
+	FencingToken FencingToken `json:"fencingToken"`
+}
 
 type Write struct {
 	Key string
@@ -43,28 +85,44 @@ type LogEntry struct {
 	Term    uint64
 }
 
+type Server struct {
+	id          uint64
+	mu          sync.Mutex
+	peerList    Set
+	peerAddress map[uint64]string
+	rpcServer   *rpc.Server
+	listener    net.Listener
+	peers       map[uint64]*rpc.Client
+	quit        chan interface{}
+	wg          sync.WaitGroup
+	wsClients   map[string]*websocket.Conn
+	wsMu        sync.Mutex
+	node        *Node
+	db          *Database
+	commitChan  chan CommitEntry
+	ready       <-chan interface{}
+}
+
 type Node struct {
-	id             uint64
-	mu             sync.Mutex
-	peerList       Set
-	server         *Server
-	db             *Database
-	commitChan     chan CommitEntry
-	newCommitReady chan struct{}
-	trigger        chan struct{}
-
-	currentTerm     uint64
-	potentialLeader int64
-	votedFor        int64
-	log             []LogEntry
-
+	id                 uint64
+	mu                 sync.Mutex
+	peerList           Set
+	server             *Server
+	db                 *Database
+	commitChan         chan CommitEntry
+	newCommitReady     chan struct{}
+	trigger            chan struct{}
+	currentTerm        uint64
+	potentialLeader    int64
+	votedFor           int64
+	log                []LogEntry
 	commitLength       uint64
 	lastApplied        uint64
 	state              NodeState
 	electionResetEvent time.Time
-
-	nextIndex    map[uint64]uint64
-	matchedIndex map[uint64]uint64
+	nextIndex          map[uint64]uint64
+	matchedIndex       map[uint64]uint64
+	activeLocks        map[string]LockInfo
 }
 
 type RequestVoteArgs struct {

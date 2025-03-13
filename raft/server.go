@@ -1,33 +1,20 @@
 package raft
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"net/rpc"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
-type Server struct {
-	id          uint64
-	mu          sync.Mutex
-	peerList    Set
-	peerAddress map[uint64]string
-	rpcServer   *rpc.Server
-	listener    net.Listener
-	peers       map[uint64]*rpc.Client
-	quit        chan interface{}
-	wg          sync.WaitGroup
-
-	node       *Node
-	db         *Database
-	commitChan chan CommitEntry
-	ready      <-chan interface{}
-}
-
-func CreateServer(
+func createServer(
 	serverId uint64,
 	db *Database,
 	ready <-chan interface{},
@@ -67,10 +54,110 @@ func (server *Server) ConnectionAccept() {
 	}
 }
 
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	// For simplicity, allow all origins
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func (server *Server) handleClientLockCommands(conn *websocket.Conn) {
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("Error reading from websocket for client: %v", err)
+			break
+		}
+
+		var req LockAcquireRequest
+		err = json.Unmarshal(msg, &req)
+		if err != nil {
+			log.Printf("Error decoding LockCommand: %v", err)
+			continue
+		}
+
+		fmt.Printf("req: %v\n", req)
+
+		var fencingTokenValue uint64
+		fencingTokenKey := fmt.Sprintf("%s_%s", FENCING_TOKEN_PREFIX, req.Key)
+		server.node.readFromStorage(fencingTokenKey, &fencingTokenValue)
+		fmt.Printf("fencing token value: %v\n", fencingTokenValue)
+
+		cmd := LockCommand{
+			CommandType: req.CommandType,
+			Key:         req.Key,
+			ClientID:    req.ClientID,
+			TTL:         req.TTL,
+			FencingToken: FencingToken{
+				Key:   fencingTokenKey,
+				Value: fencingTokenValue,
+			},
+		}
+
+		success, result, err := server.SubmitToServer(cmd)
+		if err != nil {
+			log.Printf("Error submitting LockCommand: %v", err)
+		} else if success {
+			log.Printf("LockCommand for key %q from client %s applied successfully, result: %v", cmd.Key, cmd.ClientID, result)
+		} else {
+			log.Printf("LockCommand for key %q from client %s was not applied, result: %v", cmd.Key, cmd.ClientID, result)
+		}
+	}
+}
+
+func (server *Server) WSHandler(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		http.Error(w, "Could not open websocket connection", http.StatusBadRequest)
+		return
+	}
+
+	// Expect the client to send its clientID immediately.
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		conn.Close()
+		return
+	}
+	clientID := string(msg)
+
+	server.wsMu.Lock()
+	if server.wsClients == nil {
+		server.wsClients = make(map[string]*websocket.Conn)
+	}
+	server.wsClients[clientID] = conn
+	server.wsMu.Unlock()
+	fmt.Printf("WebSocket connection established for client: %s\n", clientID)
+	// Optionally, you can keep reading from the connection to handle pings or other messages.
+	go server.handleClientLockCommands(conn)
+}
+
+// NotifyClient sends a notification message to the given clientID.
+func (s *Server) NotifyLockAcquire(clientID string, fencingToken FencingToken) {
+	s.wsMu.Lock()
+	conn, ok := s.wsClients[clientID]
+	s.wsMu.Unlock()
+	if ok {
+		lockRes := LockAcquireReply{
+			Success:      true,
+			FencingToken: fencingToken,
+		}
+		data, err := json.Marshal(lockRes)
+		if err != nil {
+			fmt.Printf("json marshal error: %v\n", err)
+			return
+		}
+		err = conn.WriteMessage(websocket.TextMessage, data)
+		if err != nil {
+			fmt.Printf("Error notifying client %s: %v\n", clientID, err)
+		}
+	} else {
+		fmt.Printf("No websocket found for client %s\n", clientID)
+	}
+}
+
 func (server *Server) Serve(port ...string) {
 	server.mu.Lock()
 	server.node = CreateNode(server.id, server.peerList, server, server.db, server.ready, server.commitChan)
-	// server.node = NewRaftNode(server.id, server.peerList, server, server.db, server.ready, server.commitChan)
 	server.rpcServer = rpc.NewServer()
 	server.rpcServer.RegisterName("RaftNode", server.node)
 	var err error
@@ -84,11 +171,16 @@ func (server *Server) Serve(port ...string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("[%v] Listening at %s\n", server.id, server.listener.Addr())
+	log.Printf("[%v] Listening for TCP connections at %s\n", server.id, server.listener.Addr())
 	server.mu.Unlock()
 
 	server.wg.Add(1)
 	go server.ConnectionAccept()
+
+	httpPort := fmt.Sprintf(":%d", 50050+server.id)
+	http.HandleFunc("/ws", server.WSHandler)
+	go http.ListenAndServe(httpPort, nil)
+	log.Printf("[%v] Listening for WebSocket connections at ws://localhost:%s/ws\n", server.id, httpPort)
 }
 
 func (server *Server) DisconnectAll() {
@@ -183,18 +275,6 @@ func (server *Server) GetServerId() uint64 {
 	return server.id
 }
 
-func (server *Server) SetData(key string, value []byte) {
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	server.db.Set(key, value)
-}
-
-func (server *Server) GetData(key string) ([]byte, bool) {
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	return server.db.Get(key)
-}
-
 func (server *Server) AddToCluster(serverId uint64) {
 	if serverId == server.id {
 		return
@@ -235,6 +315,7 @@ func (server *Server) RequestToJoinCluster(leaderId uint64, addr string) error {
 			return err
 		}
 		if joinClusterReply.Success {
+			fmt.Printf("Successfully joined cluster\n")
 			fetchPeerListArgs := FetchPeerListArgs{Term: joinClusterReply.Term}
 			var fetchPeerListReply FetchPeerListReply
 			if err := server.RPC(leaderId, "RaftNode.FetchPeerList", fetchPeerListArgs, &fetchPeerListReply); err != nil {
@@ -292,4 +373,8 @@ func (server *Server) GetPeerAddress(peerId uint64) string {
 
 func (server *Server) SubmitToServer(cmd interface{}) (bool, interface{}, error) {
 	return server.node.newLogEntry(cmd)
+}
+
+func (server *Server) CollectCommits() {
+	server.node.applyLogEntry()
 }

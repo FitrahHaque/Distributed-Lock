@@ -46,6 +46,7 @@ func CreateNode(
 		electionResetEvent: time.Now(),
 		nextIndex:          make(map[uint64]uint64),
 		matchedIndex:       make(map[uint64]uint64),
+		activeLocks:        make(map[string]LockInfo),
 	}
 	if node.db.HasData() {
 		// fmt.Printf("db has data Restoring from storage on node: %d\n", node.id)
@@ -88,9 +89,7 @@ func CreateNode(
 // }
 
 func (node *Node) addPeer(peerId uint64) {
-	node.mu.Lock()
-	defer node.mu.Unlock()
-
+	//called from applyNewEntry with lock retained
 	node.peerList.Add(peerId)
 	node.nextIndex[peerId] = uint64(len(node.log)) + 1
 	node.matchedIndex[peerId] = 0
@@ -127,6 +126,26 @@ func (node *Node) sendCommit() {
 		}
 	}
 }
+
+// func (rn *Node) monitorLockExpiry(ctx context.Context, key string, expiryTime time.Time, clientID string) {
+// 	duration := time.Until(expiryTime)
+// 	select {
+// 	case <-ctx.Done():
+// 		rn.debug("Lock %q expiry monitoring canceled", key)
+// 		return
+// 	case <-time.After(duration):
+// 		rn.mu.Lock()
+// 		if entry, exists := rn.activeLocks[key]; exists {
+// 			if time.Now().After(entry.ExpiryTime) {
+// 				delete(rn.activeLocks, key)
+// 				rn.debug("Lock %q automatically expired and released", key)
+// 				rn.server.NotifyLockAcquire(clientID, ))
+// 				// Optionally, append a log entry to record the auto-release.
+// 			}
+// 		}
+// 		rn.mu.Unlock()
+// 	}
+// }
 
 func (node *Node) runElectionTimer() {
 	timeoutDuration := node.electionTimeout()
@@ -446,6 +465,19 @@ func (node *Node) readFromStorage(key string, reply interface{}) error {
 	}
 }
 
+func (node *Node) setData(key string, value interface{}) error {
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+
+	if err := enc.Encode(value); err != nil {
+		node.mu.Unlock()
+		return err
+	}
+	fmt.Printf("Set key: %s, value: %d\n", key, value)
+	node.db.Set(key, buf.Bytes())
+	return nil
+}
+
 func (node *Node) newLogEntry(command interface{}) (bool, interface{}, error) {
 	node.mu.Lock()
 	// fmt.Printf("[Query %d] %v\n", node.id, command)
@@ -455,9 +487,9 @@ func (node *Node) newLogEntry(command interface{}) (bool, interface{}, error) {
 		case Read:
 			// fmt.Printf("READ v: %v", v)
 			key := v.Key
-			var value int
+			var value LockInfo
 			readErr := node.readFromStorage(key, &value)
-			// fmt.Printf("key, value = %v, %v\n", key, value)
+			fmt.Printf("key, value = %v, %v\n", key, value)
 			node.mu.Unlock()
 			return true, value, readErr
 		case AddServer:
@@ -543,6 +575,53 @@ func (node *Node) newLogEntry(command interface{}) (bool, interface{}, error) {
 
 	node.mu.Unlock()
 	return false, nil, nil
+}
+
+func (node *Node) applyLogEntry() error {
+	for commit := range node.commitChan {
+		// fmt.Printf("Collect Commits from node %d, entry: %+v\n", server.GetServerId(), commit)
+		//do we need a lock? - logic
+		node.mu.Lock()
+		// fmt.Printf("Collect Commits from node %d, entry: %+cmd\n", i, commit)
+		// logtest(server.GetServerId(), "collectCommits (%d) got %+cmd", server.GetServerId(), commit)
+		switch cmd := commit.Command.(type) {
+		case Write:
+			return node.setData(cmd.Key, cmd.Val)
+		case AddServer:
+			// fmt.Printf("Add server\n")
+			node.server.AddToCluster(cmd.ServerId)
+		case RemoveServer:
+			if node.server.GetServerId() != cmd.ServerId {
+				node.server.RemoveFromCluster(cmd.ServerId)
+				// fmt.Printf("[%d] Server %d removed from cluster\n", server.GetServerId(), v.ServerId)
+			}
+		case LockCommand:
+			fmt.Printf("Lock Command\n")
+			now := time.Now()
+			switch cmd.CommandType {
+			case LockAcquire:
+				fmt.Printf("Lock Acquire\n")
+				if node.db.Exists(cmd.Key) {
+					return fmt.Errorf("lock key %s cannot be acquired by another client before it is deleted!", cmd.Key)
+				}
+				lock := LockInfo{
+					Holder:     cmd.ClientID,
+					ExpiryTime: now.Add(cmd.TTL),
+				}
+				node.activeLocks[cmd.Key] = lock
+				node.setData(cmd.Key, lock)
+				node.setData(cmd.FencingToken.Key, cmd.FencingToken.Value)
+				node.server.NotifyLockAcquire(cmd.ClientID, cmd.FencingToken)
+			case LockRelease:
+				break
+			}
+		default:
+			// fmt.Printf("default\n")
+			break
+		}
+		node.mu.Unlock()
+	}
+	return nil
 }
 
 func (node *Node) Stop() {
