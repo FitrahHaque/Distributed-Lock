@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"context"
 	"net"
 	"net/rpc"
 	"sync"
@@ -9,9 +10,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type LockCommandType int
-
 const FENCING_TOKEN_PREFIX string = "fencing_token"
+
+type LockCommandType int
 
 const (
 	LockAcquire LockCommandType = iota
@@ -22,12 +23,18 @@ type FencingToken struct {
 	Key   string
 	Value uint64
 }
-type LockCommand struct {
-	CommandType  LockCommandType
+
+type LockAcquireCommand struct {
 	Key          string
 	ClientID     string
 	TTL          time.Duration
+	Contact      uint64
 	FencingToken FencingToken
+}
+
+type LockReleaseCommand struct {
+	Key      string
+	ClientID string
 }
 
 type LockInfo struct {
@@ -35,7 +42,7 @@ type LockInfo struct {
 	ExpiryTime time.Time
 }
 
-type LockAcquireRequest struct {
+type LockRequest struct {
 	CommandType LockCommandType
 	Key         string
 	ClientID    string
@@ -104,25 +111,25 @@ type Server struct {
 }
 
 type Node struct {
-	id                 uint64
-	mu                 sync.Mutex
-	peerList           Set
-	server             *Server
-	db                 *Database
-	commitChan         chan CommitEntry
-	newCommitReady     chan struct{}
-	trigger            chan struct{}
-	currentTerm        uint64
-	potentialLeader    int64
-	votedFor           int64
-	log                []LogEntry
-	commitLength       uint64
-	lastApplied        uint64
-	state              NodeState
-	electionResetEvent time.Time
-	nextIndex          map[uint64]uint64
-	matchedIndex       map[uint64]uint64
-	activeLocks        map[string]LockInfo
+	id                            uint64
+	mu                            sync.Mutex
+	peerList                      Set
+	server                        *Server
+	db                            *Database
+	commitChan                    chan CommitEntry
+	newCommitReady                chan struct{}
+	trigger                       chan struct{}
+	currentTerm                   uint64
+	potentialLeader               int64
+	votedFor                      int64
+	log                           []LogEntry
+	commitLength                  uint64
+	lastApplied                   uint64
+	state                         NodeState
+	electionResetEvent            time.Time
+	nextIndex                     map[uint64]uint64
+	matchedIndex                  map[uint64]uint64
+	activeLockExpiryMonitorCancel map[string]context.CancelFunc
 }
 
 type RequestVoteArgs struct {
@@ -189,12 +196,12 @@ type FetchPeerListReply struct {
 	PeerAddress map[uint64]string
 }
 
-type SendDataArgs struct {
+type AppendDataArgs struct {
 	Cmd  interface{}
 	Term uint64
 }
 
-type SendDataReply struct {
+type AppendDataReply struct {
 	Success  bool
 	Term     uint64
 	LeaderId int64

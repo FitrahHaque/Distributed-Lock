@@ -234,7 +234,8 @@ func ServerInput(sigCh chan os.Signal) {
 	gob.Register(Read{})
 	gob.Register(AddServer{})
 	gob.Register(RemoveServer{})
-	gob.Register(LockCommand{})
+	gob.Register(LockAcquireCommand{})
+	gob.Register(LockReleaseCommand{})
 
 	fmt.Println("\n\n=============================================================")
 	fmt.Println(".............CONFIGURE YOUR SERVER.......................")

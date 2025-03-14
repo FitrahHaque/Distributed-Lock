@@ -69,7 +69,7 @@ func (server *Server) handleClientLockCommands(conn *websocket.Conn) {
 			break
 		}
 
-		var req LockAcquireRequest
+		var req LockRequest
 		err = json.Unmarshal(msg, &req)
 		if err != nil {
 			log.Printf("Error decoding LockCommand: %v", err)
@@ -77,31 +77,70 @@ func (server *Server) handleClientLockCommands(conn *websocket.Conn) {
 		}
 
 		fmt.Printf("req: %v\n", req)
-
-		var fencingTokenValue uint64
-		fencingTokenKey := fmt.Sprintf("%s_%s", FENCING_TOKEN_PREFIX, req.Key)
-		server.node.readFromStorage(fencingTokenKey, &fencingTokenValue)
-		fmt.Printf("fencing token value: %v\n", fencingTokenValue)
-
-		cmd := LockCommand{
-			CommandType: req.CommandType,
-			Key:         req.Key,
-			ClientID:    req.ClientID,
-			TTL:         req.TTL,
-			FencingToken: FencingToken{
-				Key:   fencingTokenKey,
-				Value: fencingTokenValue,
-			},
+		if req.CommandType == LockAcquire {
+			var fencingTokenValue uint64
+			fencingTokenKey := fmt.Sprintf("%s_%s", FENCING_TOKEN_PREFIX, req.Key)
+			if !server.node.db.Exists(fencingTokenKey) {
+				fencingTokenValue = 0
+			} else {
+				server.node.readFromStorage(fencingTokenKey, &fencingTokenValue)
+				fencingTokenValue++
+			}
+			fmt.Printf("fencing token value: %v\n", fencingTokenValue)
+			cmd := LockAcquireCommand{
+				Key:      req.Key,
+				ClientID: req.ClientID,
+				TTL:      req.TTL,
+				FencingToken: FencingToken{
+					Key:   fencingTokenKey,
+					Value: fencingTokenValue,
+				},
+			}
+			success, result, err := server.SubmitToServer(cmd)
+			if err != nil {
+				log.Printf("Error submitting LockCommand: %v", err)
+			} else if success {
+				log.Printf("LockCommand for key %q from client %s applied successfully, result: %v", cmd.Key, cmd.ClientID, result)
+			} else {
+				log.Printf("LockCommand for key %q from client %s was not applied, result: %v", cmd.Key, cmd.ClientID, result)
+			}
+		} else if req.CommandType == LockRelease {
+			cmd := LockReleaseCommand{
+				Key:      req.Key,
+				ClientID: req.ClientID,
+			}
+			success, result, err := server.SubmitToServer(cmd)
+			if err != nil {
+				log.Printf("Error submitting LockCommand: %v", err)
+			} else if success {
+				log.Printf("LockCommand for key %q from client %s applied successfully, result: %v", cmd.Key, cmd.ClientID, result)
+			} else {
+				log.Printf("LockCommand for key %q from client %s was not applied, result: %v", cmd.Key, cmd.ClientID, result)
+			}
 		}
+	}
+}
 
-		success, result, err := server.SubmitToServer(cmd)
+func (server *Server) NotifyLockAcquire(clientID string, fencingToken FencingToken) {
+	server.wsMu.Lock()
+	conn, ok := server.wsClients[clientID]
+	server.wsMu.Unlock()
+	if ok {
+		lockRes := LockAcquireReply{
+			Success:      true,
+			FencingToken: fencingToken,
+		}
+		data, err := json.Marshal(lockRes)
 		if err != nil {
-			log.Printf("Error submitting LockCommand: %v", err)
-		} else if success {
-			log.Printf("LockCommand for key %q from client %s applied successfully, result: %v", cmd.Key, cmd.ClientID, result)
-		} else {
-			log.Printf("LockCommand for key %q from client %s was not applied, result: %v", cmd.Key, cmd.ClientID, result)
+			fmt.Printf("json marshal error: %v\n", err)
+			return
 		}
+		err = conn.WriteMessage(websocket.TextMessage, data)
+		if err != nil {
+			fmt.Printf("Error notifying client %s: %v\n", clientID, err)
+		}
+	} else {
+		fmt.Printf("No websocket found for client %s\n", clientID)
 	}
 }
 
@@ -127,34 +166,10 @@ func (server *Server) WSHandler(w http.ResponseWriter, r *http.Request) {
 	server.wsClients[clientID] = conn
 	server.wsMu.Unlock()
 	fmt.Printf("WebSocket connection established for client: %s\n", clientID)
-	// Optionally, you can keep reading from the connection to handle pings or other messages.
 	go server.handleClientLockCommands(conn)
 }
 
-// NotifyClient sends a notification message to the given clientID.
-func (s *Server) NotifyLockAcquire(clientID string, fencingToken FencingToken) {
-	s.wsMu.Lock()
-	conn, ok := s.wsClients[clientID]
-	s.wsMu.Unlock()
-	if ok {
-		lockRes := LockAcquireReply{
-			Success:      true,
-			FencingToken: fencingToken,
-		}
-		data, err := json.Marshal(lockRes)
-		if err != nil {
-			fmt.Printf("json marshal error: %v\n", err)
-			return
-		}
-		err = conn.WriteMessage(websocket.TextMessage, data)
-		if err != nil {
-			fmt.Printf("Error notifying client %s: %v\n", clientID, err)
-		}
-	} else {
-		fmt.Printf("No websocket found for client %s\n", clientID)
-	}
-}
-
+// func (server *Server)
 func (server *Server) Serve(port ...string) {
 	server.mu.Lock()
 	server.node = CreateNode(server.id, server.peerList, server, server.db, server.ready, server.commitChan)

@@ -20,11 +20,20 @@ const (
 	LockRelease
 )
 
-type LockAcquireRequest struct {
+type FencingToken struct {
+	Key   string
+	Value uint64
+}
+
+type LockRequest struct {
 	CommandType LockCommandType `json:"commandType"`
 	Key         string          `json:"key"`
 	ClientID    string          `json:"clientId"`
 	TTL         time.Duration   `json:"ttl"`
+}
+type LockAcquireReply struct {
+	Success      bool
+	FencingToken FencingToken
 }
 
 var Conn *websocket.Conn
@@ -53,8 +62,7 @@ func acquireLock(key string, n int64) {
 		fmt.Printf("locking Service connection missing\n")
 		return
 	}
-	defer Conn.Close()
-	lockReq := LockAcquireRequest{
+	lockReq := LockRequest{
 		CommandType: LockAcquire,
 		Key:         key,
 		ClientID:    ClientID,
@@ -81,8 +89,42 @@ func acquireLock(key string, n int64) {
 			return
 		}
 		fmt.Printf("Received notification: %s\n", message)
+		var reply LockAcquireReply
+		err = json.Unmarshal(message, &reply)
+		if err != nil {
+			log.Printf("Error decoding LockCommand: %v", err)
+			continue
+		}
+
+		fmt.Printf("Response : %v\n", reply)
+
 		return
 	}
+}
+
+func releaseLock(key string) {
+	if Conn == nil {
+		fmt.Printf("locking Service connection missing\n")
+		return
+	}
+	lockReq := LockRequest{
+		CommandType: LockRelease,
+		Key:         key,
+		ClientID:    ClientID,
+		TTL:         time.Duration(0),
+	}
+	data, err := json.Marshal(lockReq)
+	if err != nil {
+		fmt.Printf("json marshal error: %v\n", err)
+		return
+	}
+
+	err = Conn.WriteMessage(websocket.TextMessage, data)
+	if err != nil {
+		fmt.Printf("error sending lock command: %v\n", err)
+		return
+	}
+	log.Printf("Sent lock release command: %s", data)
 }
 
 func PrintMenu() {
@@ -93,6 +135,7 @@ func PrintMenu() {
 	fmt.Println("| 1  | create client                   |      clientId                      |")
 	fmt.Println("| 2  | connect to locking service      |      serverId                      |")
 	fmt.Println("| 3  | acquire lock                    |      lockKey, TTL (in secs)        |")
+	fmt.Println("| 4  | release lock                    |      lockKey                       |")
 	fmt.Println("+----+---------------------------------+------------------------------------+")
 	fmt.Println("+---------------------------------------------------------------------------+")
 	fmt.Println("")
@@ -150,6 +193,12 @@ func ClientInput(sigCh chan os.Signal) {
 				break
 			}
 			go acquireLock(tokens[1], int64(ttl))
+		case 4:
+			if len(tokens) < 2 {
+				fmt.Printf("Lock Key not passed")
+				break
+			}
+			go releaseLock(tokens[1])
 		default:
 			fmt.Printf("Invalid input")
 		}

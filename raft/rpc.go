@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -105,21 +106,39 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesRepl
 			reply.Success = true
 			//check node.commitLength?
 			// if len(args.Entries) > 0 {
-			// 	fmt.Printf("New data available to append\n")
+			// 	fmt.Printf("entries: %v\n", args.Entries)
 			// }
 			node.log = append(node.log[:args.LastLogIndex], args.Entries...)
 			for _, entry := range args.Entries {
-				cmd := entry.Command
-				switch v := cmd.(type) {
+				switch cmd := entry.Command.(type) {
 				case AddServer:
-					if node.id != v.ServerId {
-						node.server.ConnectToPeer(v.ServerId, v.Addr)
+					if node.id != cmd.ServerId {
+						node.server.ConnectToPeer(cmd.ServerId, cmd.Addr)
 					}
 				case RemoveServer:
-					if node.id != v.ServerId && node.peerList.Exists(v.ServerId) {
-						node.peerList.Remove(v.ServerId)
+					if node.id != cmd.ServerId && node.peerList.Exists(cmd.ServerId) {
+						node.peerList.Remove(cmd.ServerId)
 					}
+				case LockReleaseCommand:
+					if !node.db.Exists(cmd.Key) {
+						continue
+					}
+					fmt.Printf("Called Lock release on follower %v\n", cmd)
+					var lockInfo LockInfo
+					if readErr := node.readFromStorage(cmd.Key, &lockInfo); readErr != nil {
+						fmt.Printf("lock %v read fail\n", cmd.Key)
+						reply.Success = false
+						return errors.New("reading the lock info from db went wrong")
+					}
+					if lockInfo.Holder != cmd.ClientID {
+						fmt.Printf("different lock holder for lock %s\n", cmd.Key)
+						reply.Success = false
+						return fmt.Errorf("lock %s is held by someone else\n", cmd.Key)
+					}
+					node.db.Delete(cmd.Key)
+					fmt.Printf("Successfully deleted all traces of lock %s\n", cmd.Key)
 				}
+
 			}
 			// if len(args.Entries) > 0 {
 			// 	fmt.Printf("New Entries: %v\n", args.Entries)
@@ -149,7 +168,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesRepl
 	return nil
 }
 
-func (node *Node) SendData(args SendDataArgs, reply *SendDataReply) error {
+func (node *Node) AppendData(args AppendDataArgs, reply *AppendDataReply) error {
 	node.mu.Lock()
 	// fmt.Println("Send Data RPC equest arrived")
 	if node.state != Leader || node.currentTerm > args.Term {
