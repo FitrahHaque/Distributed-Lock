@@ -258,6 +258,7 @@ func releaseLock(key string) {
 
 func writeData(data string, lockKey string) {
 	reqPayload := WriteRequest{
+		ClientID:     ClientID,
 		FencingToken: fencingToken[lockKey],
 		Data:         data,
 	}
@@ -304,6 +305,7 @@ func PrintMenu() {
 	fmt.Println("| 3  | acquire lock                    |      lockKey, TTL (in secs)        |")
 	fmt.Println("| 4  | release lock                    |      lockKey                       |")
 	fmt.Println("| 5  | write data                      |      message, lockKey              |")
+	fmt.Println("| 6  | start data server               |                                    |")
 	fmt.Println("+----+---------------------------------+------------------------------------+")
 	fmt.Println("+---------------------------------------------------------------------------+")
 	fmt.Println("")
@@ -315,9 +317,6 @@ func ClientInput(sigCh chan os.Signal) {
 		fmt.Println("SIGNAL RECEIVED")
 		os.Exit(0)
 	}()
-	if !isRunning {
-		go data_store_init()
-	}
 
 	reconnectedCh = make(chan struct{}, 1)
 	fencingToken = make(map[string]FencingToken)
@@ -328,6 +327,7 @@ func ClientInput(sigCh chan os.Signal) {
 
 		reader := bufio.NewReader(os.Stdin)
 		input, _ := reader.ReadString('\n')
+		// input = strings.TrimSpace(input)
 		tokens := strings.Fields(input)
 		command, err0 := strconv.Atoi(tokens[0])
 		if err0 != nil {
@@ -379,6 +379,8 @@ func ClientInput(sigCh chan os.Signal) {
 				break
 			}
 			writeData(tokens[1], tokens[2])
+		case 6:
+			go data_store_init()
 		default:
 			fmt.Printf("Invalid input")
 		}

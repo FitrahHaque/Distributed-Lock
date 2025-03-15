@@ -11,6 +11,7 @@ import (
 )
 
 type DataEntry struct {
+	ClientID          string    `json:"clientID"`
 	Timestamp         time.Time `json:"timestamp"`
 	FencingTokenKey   string    `json:"fencingTokenKey"`
 	FencingTokenValue uint64    `json:"fencingTokenValue"`
@@ -18,6 +19,7 @@ type DataEntry struct {
 }
 
 type WriteRequest struct {
+	ClientID     string       `json:"clientID"`
 	FencingToken FencingToken `json:"fencingToken"`
 	Data         string       `json:"data"`
 }
@@ -29,9 +31,8 @@ type WriteResponse struct {
 var (
 	maxFencingTokenSoFar map[string]FencingToken
 	tokenMutex           sync.Mutex
-	dataFilePath         = "data.txt"
+	dataFilePath         = "client/data.txt"
 	dataStoreURL         = "http://localhost:8000/write"
-	isRunning            bool
 )
 
 func writeHandler(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +50,7 @@ func writeHandler(w http.ResponseWriter, r *http.Request) {
 	tokenMutex.Lock()
 	defer tokenMutex.Unlock()
 
-	if req.FencingToken.Value < maxFencingTokenSoFar[req.FencingToken.Key].Value {
+	if maxToken, exists := maxFencingTokenSoFar[req.FencingToken.Key]; exists && req.FencingToken.Value < maxToken.Value {
 		resp := WriteResponse{
 			Success: false,
 		}
@@ -61,6 +62,7 @@ func writeHandler(w http.ResponseWriter, r *http.Request) {
 	maxFencingTokenSoFar[req.FencingToken.Key] = req.FencingToken
 
 	entry := DataEntry{
+		ClientID:          req.ClientID,
 		Timestamp:         time.Now(),
 		FencingTokenKey:   req.FencingToken.Key,
 		FencingTokenValue: req.FencingToken.Value,
@@ -93,10 +95,7 @@ func writeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func data_store_init() {
-	if isRunning {
-		return
-	}
-	isRunning = true
+	maxFencingTokenSoFar = make(map[string]FencingToken)
 	http.HandleFunc("/write", writeHandler)
 	log.Printf("Server is running on port %d...\n", 8000)
 	err := http.ListenAndServe(":"+strconv.Itoa(8000), nil)
