@@ -138,6 +138,8 @@ type Node struct {
 	nextIndex                     map[uint64]uint64
 	matchedIndex                  map[uint64]uint64
 	activeLockExpiryMonitorCancel map[string]context.CancelFunc
+	pendingLockQueue              map[string]*[]LockRequest
+	pullLockRequestChan           map[string](chan struct{})
 }
 
 type RequestVoteArgs struct {

@@ -104,10 +104,6 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesRepl
 		if args.LastLogIndex == 0 ||
 			args.LastLogIndex <= uint64(len(node.log)) && args.LastLogTerm == node.log[args.LastLogIndex-1].Term {
 			reply.Success = true
-			//check node.commitLength?
-			// if len(args.Entries) > 0 {
-			// 	fmt.Printf("entries: %v\n", args.Entries)
-			// }
 			node.log = append(node.log[:args.LastLogIndex], args.Entries...)
 			for _, entry := range args.Entries {
 				switch cmd := entry.Command.(type) {
@@ -120,15 +116,16 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesRepl
 						node.peerList.Remove(cmd.ServerId)
 					}
 				case LockReleaseCommand:
-					if !node.db.Exists(cmd.Key) {
-						continue
-					}
 					fmt.Printf("Called Lock release on follower %v\n", cmd)
 					var lockInfo LockInfo
-					if readErr := node.readFromStorage(cmd.Key, &lockInfo); readErr != nil {
+					found, readErr := node.readFromStorage(cmd.Key, &lockInfo)
+					if readErr != nil {
 						fmt.Printf("lock %v read fail\n", cmd.Key)
 						reply.Success = false
 						return errors.New("reading the lock info from db went wrong")
+					}
+					if !found {
+						continue
 					}
 					if lockInfo.Holder != cmd.ClientID {
 						fmt.Printf("different lock holder for lock %s\n", cmd.Key)
@@ -140,11 +137,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesRepl
 				}
 
 			}
-			// if len(args.Entries) > 0 {
-			// 	fmt.Printf("New Entries: %v\n", args.Entries)
-			// }
 			if args.LeaderCommit > node.commitLength {
-				fmt.Printf("commiited\n")
 				node.commitLength = uint64(math.Min(float64(args.LeaderCommit), float64((len(node.log)))))
 				node.newCommitReady <- struct{}{}
 			}
@@ -171,7 +164,6 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesRepl
 
 func (node *Node) AppendData(args AppendDataArgs, reply *AppendDataReply) error {
 	node.mu.Lock()
-	// fmt.Println("Send Data RPC equest arrived")
 	if node.state != Leader || node.currentTerm > args.Term {
 		reply.Success = false
 		reply.Term = node.currentTerm

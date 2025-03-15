@@ -78,32 +78,7 @@ func (server *Server) handleClientLockCommands(conn *websocket.Conn) {
 
 		fmt.Printf("req: %v\n", req)
 		if req.CommandType == LockAcquire {
-			var fencingTokenValue uint64
-			fencingTokenKey := fmt.Sprintf("%s_%s", FENCING_TOKEN_PREFIX, req.Key)
-			if !server.node.db.Exists(fencingTokenKey) {
-				fencingTokenValue = 0
-			} else {
-				server.node.readFromStorage(fencingTokenKey, &fencingTokenValue)
-				fencingTokenValue++
-			}
-			fmt.Printf("fencing token value: %v\n", fencingTokenValue)
-			cmd := LockAcquireCommand{
-				Key:      req.Key,
-				ClientID: req.ClientID,
-				TTL:      req.TTL,
-				FencingToken: FencingToken{
-					Key:   fencingTokenKey,
-					Value: fencingTokenValue,
-				},
-			}
-			success, result, err := server.SubmitToServer(cmd)
-			if err != nil {
-				log.Printf("Error submitting LockCommand: %v", err)
-			} else if success {
-				log.Printf("LockCommand for key %q from client %s applied successfully, result: %v", cmd.Key, cmd.ClientID, result)
-			} else {
-				log.Printf("LockCommand for key %q from client %s was not applied, result: %v", cmd.Key, cmd.ClientID, result)
-			}
+			server.node.handleLockAcquireRequest(req)
 		} else if req.CommandType == LockRelease {
 			cmd := LockReleaseCommand{
 				Key:      req.Key,
@@ -169,7 +144,7 @@ func (server *Server) WSHandler(w http.ResponseWriter, r *http.Request) {
 	if isLeader {
 		reply.Success = true
 		reply.Leader = int64(server.id)
-		fmt.Printf("Found the leader\n")
+		// fmt.Printf("Found the leader\n")
 		server.wsMu.Lock()
 		if server.wsClients == nil {
 			server.wsClients = make(map[string]*websocket.Conn)
@@ -179,7 +154,7 @@ func (server *Server) WSHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("WebSocket connection established for client: %s\n", req.ClientID)
 		go server.handleClientLockCommands(conn)
 	} else {
-		fmt.Printf("Did not find the leader\n")
+		// fmt.Printf("Did not find the leader\n")
 		reply.Success = false
 		reply.Leader = leader
 	}

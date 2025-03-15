@@ -48,6 +48,8 @@ func CreateNode(
 		nextIndex:                     make(map[uint64]uint64),
 		matchedIndex:                  make(map[uint64]uint64),
 		activeLockExpiryMonitorCancel: make(map[string]context.CancelFunc),
+		pendingLockQueue:              make(map[string]*[]LockRequest),
+		pullLockRequestChan:           make(map[string]chan struct{}, 1),
 	}
 	if node.db.HasData() {
 		// fmt.Printf("db has data Restoring from storage on node: %d\n", node.id)
@@ -420,6 +422,25 @@ func (node *Node) becomeFollower(newTerm uint64, leaderId int64) {
 	node.potentialLeader = leaderId
 	node.electionResetEvent = time.Now()
 
+	for key, cancelFunc := range node.activeLockExpiryMonitorCancel {
+		cancelFunc()
+		delete(node.activeLockExpiryMonitorCancel, key)
+	}
+
+	for key := range node.pendingLockQueue {
+		delete(node.pendingLockQueue, key)
+	}
+
+	for key, ch := range node.pullLockRequestChan {
+		close(ch)
+		delete(node.pullLockRequestChan, key)
+	}
+
+	for clientID, wsConn := range node.server.wsClients {
+		wsConn.Close()
+		delete(node.server.wsClients, clientID)
+	}
+
 	go node.runElectionTimer()
 }
 
@@ -462,16 +483,15 @@ func (node *Node) restoreFromStorage() {
 	}
 }
 
-func (node *Node) readFromStorage(key string, reply interface{}) error {
+func (node *Node) readFromStorage(key string, reply interface{}) (bool, error) {
 	if value, found := node.db.Get(key); found {
 		dec := gob.NewDecoder(bytes.NewBuffer(value))
 		if err := dec.Decode(reply); err != nil {
-			return err
+			return false, err
 		}
-		return nil
+		return true, nil
 	} else {
-		err := fmt.Errorf("KeyNotFound:%v", key)
-		return err
+		return false, nil
 	}
 }
 
@@ -499,11 +519,9 @@ func (node *Node) forwardToLeader(command interface{}) (bool, interface{}, error
 		args := AppendDataArgs{Cmd: command, Term: node.currentTerm}
 		var reply AppendDataReply
 		if err := node.server.RPC(uint64(leaderId), "RaftNode.AppendData", args, &reply); err != nil {
-			// fmt.Printf("RPC Call failed\n")
 			return false, nil, err
 		}
 		if reply.Success {
-			// fmt.Printf("Send data successful with leader %d\n", leaderId)
 			return reply.Result.Success, reply.Result.Value, reply.Result.Error
 		}
 		node.mu.Lock()
@@ -521,19 +539,28 @@ func (node *Node) forwardToLeader(command interface{}) (bool, interface{}, error
 }
 
 func (node *Node) newLogEntry(command interface{}) (bool, interface{}, error) {
+	fmt.Printf("newlogentry\n")
 	node.mu.Lock()
-	// fmt.Printf("[Query %d] %v\n", node.id, command)
+	fmt.Printf("[newLogEntry %d] %v\n", node.id, command)
 	// fmt.Printf("Running Submit on node %d (leader, term = %v %v)\n", node.id, node.state == Leader, node.currentTerm)
 	if node.state == Leader {
 		switch cmd := command.(type) {
 		case Read:
 			// fmt.Printf("READ v: %v", v)
 			key := cmd.Key
-			var value LockInfo
-			readErr := node.readFromStorage(key, &value)
+			var value uint64
+			found, readErr := node.readFromStorage(key, &value)
+			if readErr != nil {
+				node.mu.Unlock()
+				return false, nil, readErr
+			}
+			if !found {
+				node.mu.Unlock()
+				return false, nil, nil
+			}
 			fmt.Printf("key, value = %v, %v\n", key, value)
 			node.mu.Unlock()
-			return true, value, readErr
+			return true, value, nil
 		case AddServer:
 			node.log = append(node.log, LogEntry{
 				Command: command,
@@ -560,15 +587,18 @@ func (node *Node) newLogEntry(command interface{}) (bool, interface{}, error) {
 			return true, nil, nil
 		case LockReleaseCommand:
 			fmt.Printf("LockReleaseCommand for %v\n", cmd.Key)
-			if !node.db.Exists(cmd.Key) {
-				node.mu.Unlock()
-				return false, nil, fmt.Errorf("cannot release lock %s. It is already released\n", cmd.Key)
-			}
 			var lockInfo LockInfo
-			if readErr := node.readFromStorage(cmd.Key, &lockInfo); readErr != nil {
+			found, readErr := node.readFromStorage(cmd.Key, &lockInfo)
+			if readErr != nil {
 				node.mu.Unlock()
 				return false, nil, errors.New("reading the lock info from db went wrong")
 			}
+
+			if !found {
+				node.mu.Unlock()
+				return false, nil, fmt.Errorf("cannot release lock %s. It is already released\n", cmd.Key)
+			}
+
 			if lockInfo.Holder != cmd.ClientID {
 				node.mu.Unlock()
 				return false, nil, fmt.Errorf("lock %s is held by someone else\n", cmd.Key)
@@ -658,7 +688,10 @@ func (node *Node) applyLogEntry() error {
 				node.server.NotifyLockAcquire(cmd.ClientID, cmd.FencingToken)
 				fmt.Printf("Notified Client about lock acquiring\n")
 			}
-		default:
+		case LockReleaseCommand:
+			if node.state == Leader && node.pullLockRequestChan[cmd.Key] != nil {
+				node.pullLockRequestChan[cmd.Key] <- struct{}{}
+			}
 			// fmt.Printf("default\n")
 			break
 		}
@@ -705,13 +738,14 @@ func (node *Node) monitorLockExpiry(ctx context.Context, key string, expiryTime 
 		fmt.Printf("Lock %q expiry monitoring cancelled\n", key)
 		return
 	case <-time.After(duration):
-		if node.db.Exists(key) {
-			var lockInfo LockInfo
-			readErr := node.readFromStorage(key, &lockInfo)
-			if readErr != nil {
-				fmt.Printf("Reading the lock info from db went wrong")
-				return
-			}
+		var lockInfo LockInfo
+		found, readErr := node.readFromStorage(key, &lockInfo)
+		if readErr != nil {
+			fmt.Printf("Reading the lock info from db went wrong")
+			return
+		}
+
+		if found {
 			if time.Now().After(lockInfo.ExpiryTime) {
 				fmt.Printf("Lock %q automatically expired and called release lock\n", key)
 				cmd := LockReleaseCommand{
@@ -722,5 +756,70 @@ func (node *Node) monitorLockExpiry(ctx context.Context, key string, expiryTime 
 				return
 			}
 		}
+	}
+}
+
+func (node *Node) handleLockAcquireRequest(req LockRequest) {
+	node.mu.Lock()
+	if queuePtr, exists := node.pendingLockQueue[req.Key]; exists {
+		*queuePtr = append(*queuePtr, req)
+	} else {
+		node.pendingLockQueue[req.Key] = &[]LockRequest{req}
+	}
+	lockRequestPing, exists := node.pullLockRequestChan[req.Key]
+	if !exists {
+		lockRequestPing = make(chan struct{}, 1)
+		node.pullLockRequestChan[req.Key] = lockRequestPing
+		go node.registerLockAcquireRequest(node.pendingLockQueue[req.Key], lockRequestPing)
+	}
+	node.mu.Unlock()
+	var value LockInfo
+	if found, readErr := node.readFromStorage(req.Key, &value); readErr != nil {
+		fmt.Printf("could not read from db for key %s\n", req.Key)
+		return
+	} else if !found {
+		fmt.Printf("sent ping\n")
+		lockRequestPing <- struct{}{}
+	}
+}
+
+func (node *Node) registerLockAcquireRequest(queue *[]LockRequest, pullLockRequestChan chan struct{}) {
+	for range pullLockRequestChan {
+		node.mu.Lock()
+		if len((*queue)) == 0 {
+			node.mu.Unlock()
+			continue
+		}
+		req := (*queue)[0]
+		*queue = (*queue)[1:]
+		node.mu.Unlock()
+		fmt.Printf("got access\n")
+		fencingTokenKey := fmt.Sprintf("%s_%s", FENCING_TOKEN_PREFIX, req.Key)
+		fencingTokenCmd := Read{
+			Key: fencingTokenKey,
+		}
+		success, value, err := node.newLogEntry(fencingTokenCmd)
+		if err != nil {
+			log.Printf("cannot read value for fencing token for key %s\n", fencingTokenKey)
+			continue
+		}
+		var fencingTokenValue uint64
+		if !success {
+			fencingTokenValue = 0
+		} else {
+			fencingTokenValue = value.(uint64) + 1
+		}
+		fmt.Printf("fencing token value: %v\n", fencingTokenValue)
+		cmd := LockAcquireCommand{
+			Key:      req.Key,
+			ClientID: req.ClientID,
+			TTL:      req.TTL,
+			FencingToken: FencingToken{
+				Key:   fencingTokenKey,
+				Value: fencingTokenValue,
+			},
+		}
+		node.newLogEntry(cmd)
+		fmt.Printf("added lock acquire command to the log\n")
 	}
 }
