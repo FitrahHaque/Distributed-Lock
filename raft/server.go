@@ -104,6 +104,7 @@ func (server *Server) NotifyLockAcquire(clientID string, fencingToken FencingTok
 	conn, ok := server.wsClients[clientID]
 	server.wsMu.Unlock()
 	if ok {
+		// fmt.Printf("Conn ok sending now\n")
 		lockRes := LockAcquireReply{
 			Success:      true,
 			FencingToken: fencingToken,
@@ -117,6 +118,7 @@ func (server *Server) NotifyLockAcquire(clientID string, fencingToken FencingTok
 		if err != nil {
 			fmt.Printf("Error notifying client %s: %v\n", clientID, err)
 		}
+		// fmt.Printf("sent seuccessfully to client %s\n", clientID)
 	} else {
 		fmt.Printf("No websocket found for client %s\n", clientID)
 	}

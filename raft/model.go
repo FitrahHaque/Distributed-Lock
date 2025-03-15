@@ -29,6 +29,7 @@ type LockAcquireCommand struct {
 	Key          string
 	ClientID     string
 	TTL          time.Duration
+	ExpiryTime   time.Time
 	Contact      uint64
 	FencingToken FencingToken
 }

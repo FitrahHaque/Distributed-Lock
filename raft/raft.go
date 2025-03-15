@@ -75,23 +75,6 @@ func CreateNode(
 	return node
 }
 
-// func (node *Node) joinCluster() error {
-// 	var reply JoinClusterReply
-// 	args := JoinClusterArgs{ServerId: node.id, ServerAddr: node.server.listener.Addr()}
-// 	// leaderAddr := node.peerList.GetRandomPeer()
-// 	// if leaderAddr == nil {
-// 	// 	return errors.New("no leader found")
-// 	// }
-
-// 	if err := node.server.RPC(leaderId, "RaftNode.JoinCluster", args, &reply); err != nil {
-// 		return err
-// 	}
-// 	if !reply.Success {
-// 		return fmt.Errorf("join cluster failed: leader %d, term %d", reply.LeaderId, reply.CurrentTerm)
-// 	}
-// 	return nil
-// }
-
 func (node *Node) addPeer(peerId uint64) {
 	node.mu.Lock()
 	defer node.mu.Unlock()
@@ -131,26 +114,6 @@ func (node *Node) sendCommit() {
 		}
 	}
 }
-
-// func (rn *Node) monitorLockExpiry(ctx context.Context, key string, expiryTime time.Time, clientID string) {
-// 	duration := time.Until(expiryTime)
-// 	select {
-// 	case <-ctx.Done():
-// 		rn.debug("Lock %q expiry monitoring canceled", key)
-// 		return
-// 	case <-time.After(duration):
-// 		rn.mu.Lock()
-// 		if entry, exists := rn.activeLocks[key]; exists {
-// 			if time.Now().After(entry.ExpiryTime) {
-// 				delete(rn.activeLocks, key)
-// 				rn.debug("Lock %q automatically expired and released", key)
-// 				rn.server.NotifyLockAcquire(clientID, ))
-// 				// Optionally, append a log entry to record the auto-release.
-// 			}
-// 		}
-// 		rn.mu.Unlock()
-// 	}
-// }
 
 func (node *Node) runElectionTimer() {
 	timeoutDuration := node.electionTimeout()
@@ -692,26 +655,35 @@ func (node *Node) applyLogEntry() error {
 			}
 		case LockAcquireCommand:
 			// fmt.Printf("Lock Acquire Command\n")
-			now := time.Now()
-			if node.db.Exists(cmd.Key) {
+			var lockInfo LockInfo
+			lockKey := fmt.Sprintf("%s%s", LOCKING_KEY_PREFIX, cmd.Key)
+			found, readErr := node.readFromStorage(lockKey, &lockInfo)
+			if readErr != nil {
+				fmt.Printf("error reading value: %v\n", readErr)
+				continue
+			}
+
+			if found {
 				fmt.Printf("Key %s already exists\n", cmd.Key)
 				continue
 			}
-			expiryTime := now.Add(cmd.TTL)
-			lock := LockInfo{
-				Holder:     cmd.ClientID,
-				ExpiryTime: expiryTime,
+			if time.Now().After(cmd.ExpiryTime) {
+				fmt.Printf("Deprecated update of lock key %s\n", cmd.Key)
+				continue
 			}
-			keyStr := fmt.Sprintf("%s%s", LOCKING_KEY_PREFIX, cmd.Key)
-			node.setData(keyStr, lock)
+			lockInfo = LockInfo{
+				Holder:     cmd.ClientID,
+				ExpiryTime: cmd.ExpiryTime,
+			}
+			node.setData(lockKey, lockInfo)
 			node.setData(cmd.FencingToken.Key, cmd.FencingToken.Value)
-			// fmt.Printf("Added lock key %s, ready to notify the client\n", cmd.Key)
+			fmt.Printf("Added lock key %s\n", cmd.Key)
 			if node.state == Leader {
 				ctx, cancel := context.WithCancel(context.Background())
 				node.mu.Lock()
 				node.activeLockExpiryMonitorCancel[cmd.Key] = cancel
 				node.mu.Unlock()
-				go node.monitorLockExpiry(ctx, cmd.Key, expiryTime)
+				go node.monitorLockExpiry(ctx, cmd.Key, cmd.ExpiryTime)
 				node.server.NotifyLockAcquire(cmd.ClientID, cmd.FencingToken)
 				fmt.Printf("Notified Client about lock acquiring\n")
 			}
@@ -843,9 +815,10 @@ func (node *Node) registerLockAcquireRequest(queue *[]LockRequest, pullLockReque
 		}
 		// fmt.Printf("fencing token value: %v\n", fencingTokenValue)
 		cmd := LockAcquireCommand{
-			Key:      req.Key,
-			ClientID: req.ClientID,
-			TTL:      req.TTL,
+			Key:        req.Key,
+			ClientID:   req.ClientID,
+			TTL:        req.TTL,
+			ExpiryTime: time.Now().Add(req.TTL),
 			FencingToken: FencingToken{
 				Key:   fencingTokenKey,
 				Value: fencingTokenValue,

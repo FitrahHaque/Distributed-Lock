@@ -51,7 +51,7 @@ var (
 	ClientID      string
 	servers       []uint64
 	responseChan  chan []byte
-	reconnectedCh chan struct{} // Notification channel
+	reconnectedCh chan struct{}
 )
 
 func selectRandomServer(serverId int64) uint64 {
@@ -111,11 +111,17 @@ func connectToLeader() {
 func startReader() {
 	for {
 		responseChan = make(chan []byte)
+		// fmt.Printf("finding connection...\n")
 		connectToLeader()
-
-		reconnectedCh <- struct{}{}
+		// fmt.Printf("reestablished connection\n")
+		select {
+		case reconnectedCh <- struct{}{}:
+		default:
+			<-reconnectedCh
+		}
 
 		for {
+			// fmt.Printf("Ready to Listen...\n")
 			_, message, err := Conn.ReadMessage()
 			if err != nil {
 				log.Printf("Connection lost: %v", err)
@@ -123,6 +129,7 @@ func startReader() {
 				Conn.Close()
 				break
 			}
+			// fmt.Printf("Message received\n")
 
 			responseChan <- message
 		}
@@ -177,7 +184,7 @@ func acquireLock(key string, ttl int64) {
 		for {
 			if Conn == nil {
 				// log.Println("Waiting for reconnection...")
-				time.Sleep(time.Second)
+				<-reconnectedCh
 				continue
 			}
 			err := Conn.WriteMessage(websocket.TextMessage, data)
@@ -193,11 +200,11 @@ func acquireLock(key string, ttl int64) {
 		select {
 		case message, ok := <-responseChan:
 			if !ok {
-				// log.Println("Connection lost, waiting for reconnection...")
+				log.Println("Connection lost, waiting for reconnection...")
 				<-reconnectedCh
 				continue
 			}
-
+			// fmt.Printf("Message: %v\n", message)
 			var reply LockAcquireReply
 			err = json.Unmarshal(message, &reply)
 			if err != nil {
