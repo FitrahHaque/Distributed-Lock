@@ -122,7 +122,7 @@ func (node *Node) sendCommit() {
 		}
 		node.mu.Unlock()
 		for i, entry := range pendingCommitEntries {
-			fmt.Printf("Committed entry for node Id: %d, index %d,  entry: %v\n", node.id, lastAppliedSaved+uint64(i)+1, entry.Command)
+			// fmt.Printf("Committed entry for node Id: %d, index %d,  entry: %v\n", node.id, lastAppliedSaved+uint64(i)+1, entry.Command)
 			node.commitChan <- CommitEntry{
 				Command: entry.Command,
 				Index:   lastAppliedSaved + uint64(i) + 1,
@@ -191,7 +191,7 @@ func (node *Node) electionTimeout() time.Duration {
 func (node *Node) startElection() {
 	node.state = Candidate
 	node.currentTerm += 1
-	fmt.Printf("Calling startElection() by %d for term %d with peers: %v\n", node.id, node.currentTerm, node.peerList)
+	// fmt.Printf("Calling startElection() by %d for term %d with peers: %v\n", node.id, node.currentTerm, node.peerList)
 	candidacyTerm := node.currentTerm
 	node.electionResetEvent = time.Now()
 	node.votedFor = int64(node.id)
@@ -346,8 +346,8 @@ func (node *Node) sendEntriesToFollowers() {
 				node.mu.Lock()
 				defer node.mu.Unlock()
 				if len(entries) > 0 {
-					fmt.Printf("Entries Sent on node %d: %v\n", peer, entries)
-					fmt.Printf("Reply from peer %d: success = %v\n", peer, reply.Success)
+					// fmt.Printf("Entries Sent on node %d: %v\n", peer, entries)
+					// fmt.Printf("Reply from peer %d: success = %v\n", peer, reply.Success)
 				}
 				if reply.Term > leadershipTerm {
 					node.becomeFollower(reply.Term, -1)
@@ -528,7 +528,7 @@ func (node *Node) setData(key string, value interface{}) error {
 		node.mu.Unlock()
 		return err
 	}
-	fmt.Printf("Set key: %s, value: %v\n", key, value)
+	// fmt.Printf("Set key: %s, value: %v\n", key, value)
 	node.db.Set(key, buf.Bytes())
 	node.mu.Unlock()
 	return nil
@@ -539,7 +539,7 @@ func (node *Node) forwardToLeader(command interface{}) (bool, interface{}, error
 	leaderId := node.potentialLeader
 	node.mu.Unlock()
 	for leaderId != -1 || leaderId != int64(node.id) {
-		fmt.Printf("Forwarding Data to Leader %d\n", leaderId)
+		// fmt.Printf("Forwarding Data to Leader %d\n", leaderId)
 		args := AppendDataArgs{Cmd: command, Term: node.currentTerm}
 		var reply AppendDataReply
 		if err := node.server.RPC(uint64(leaderId), "RaftNode.AppendData", args, &reply); err != nil {
@@ -582,7 +582,7 @@ func (node *Node) newLogEntry(command interface{}) (bool, interface{}, error) {
 				node.mu.Unlock()
 				return false, nil, nil
 			}
-			fmt.Printf("key, value = %v, %v\n", key, value)
+			// fmt.Printf("key, value = %v, %v\n", key, value)
 			node.mu.Unlock()
 			return true, value, nil
 		case AddServer:
@@ -610,7 +610,7 @@ func (node *Node) newLogEntry(command interface{}) (bool, interface{}, error) {
 			node.trigger <- struct{}{}
 			return true, nil, nil
 		case LockReleaseCommand:
-			fmt.Printf("LockReleaseCommand for %v\n", cmd.Key)
+			// fmt.Printf("LockReleaseCommand for %v\n", cmd.Key)
 			var lockInfo LockInfo
 			lockKey := fmt.Sprintf("%s%s", LOCKING_KEY_PREFIX, cmd.Key)
 			found, readErr := node.readFromStorage(lockKey, &lockInfo)
@@ -628,7 +628,7 @@ func (node *Node) newLogEntry(command interface{}) (bool, interface{}, error) {
 				node.mu.Unlock()
 				return false, nil, fmt.Errorf("lock %s is held by someone else\n", cmd.Key)
 			}
-			fmt.Printf("Should delete the lock key %s\n", cmd.Key)
+			// fmt.Printf("Should delete the lock key %s\n", cmd.Key)
 			node.db.Delete(lockKey)
 			if node.activeLockExpiryMonitorCancel[cmd.Key] == nil {
 				node.mu.Unlock()
@@ -646,7 +646,7 @@ func (node *Node) newLogEntry(command interface{}) (bool, interface{}, error) {
 			node.trigger <- struct{}{}
 			return true, nil, nil
 		default:
-			fmt.Printf("Data append on leader: %d, command: %v\n", node.id, command)
+			// fmt.Printf("Data append on leader: %d, command: %v\n", node.id, command)
 			node.log = append(node.log, LogEntry{
 				Command: command,
 				Term:    node.currentTerm,
@@ -678,7 +678,7 @@ func (node *Node) applyLogEntry() error {
 		//do we need a lock? - logic
 		// fmt.Printf("Collect Commits from node %d, entry: %+cmd\n", i, commit)
 		// logtest(server.GetServerId(), "collectCommits (%d) got %+cmd", server.GetServerId(), commit)
-		fmt.Printf("commit: %v\n", commit)
+		// fmt.Printf("commit: %v\n", commit)
 		switch cmd := commit.Command.(type) {
 		case Write:
 			node.setData(cmd.Key, cmd.Val)
@@ -691,7 +691,7 @@ func (node *Node) applyLogEntry() error {
 				// fmt.Printf("[%d] Server %d removed from cluster\n", server.GetServerId(), v.ServerId)
 			}
 		case LockAcquireCommand:
-			fmt.Printf("Lock Acquire Command\n")
+			// fmt.Printf("Lock Acquire Command\n")
 			now := time.Now()
 			if node.db.Exists(cmd.Key) {
 				fmt.Printf("Key %s already exists\n", cmd.Key)
@@ -705,7 +705,7 @@ func (node *Node) applyLogEntry() error {
 			keyStr := fmt.Sprintf("%s%s", LOCKING_KEY_PREFIX, cmd.Key)
 			node.setData(keyStr, lock)
 			node.setData(cmd.FencingToken.Key, cmd.FencingToken.Value)
-			fmt.Printf("Added lock key %s, ready to notify the client\n", cmd.Key)
+			// fmt.Printf("Added lock key %s, ready to notify the client\n", cmd.Key)
 			if node.state == Leader {
 				ctx, cancel := context.WithCancel(context.Background())
 				node.mu.Lock()
@@ -787,9 +787,9 @@ func (node *Node) monitorLockExpiry(ctx context.Context, key string, expiryTime 
 }
 
 func (node *Node) handleLockAcquireRequest(req LockRequest) {
-	fmt.Printf("handleLockAcquireRequest %v\n", req)
+	// fmt.Printf("handleLockAcquireRequest %v\n", req)
 	node.mu.Lock()
-	fmt.Printf("handleLockAcquireRequest locked %v\n", req)
+	// fmt.Printf("handleLockAcquireRequest locked %v\n", req)
 	if queuePtr, exists := node.pendingLockQueue[req.Key]; exists {
 		*queuePtr = append(*queuePtr, req)
 	} else {
@@ -799,7 +799,7 @@ func (node *Node) handleLockAcquireRequest(req LockRequest) {
 	if !exists {
 		lockRequestPing = make(chan struct{}, 1)
 		node.pullLockRequestChan[req.Key] = lockRequestPing
-		fmt.Printf("starting register\n")
+		// fmt.Printf("starting register\n")
 		go node.registerLockAcquireRequest(node.pendingLockQueue[req.Key], lockRequestPing)
 	}
 	node.mu.Unlock()
@@ -809,16 +809,16 @@ func (node *Node) handleLockAcquireRequest(req LockRequest) {
 		fmt.Printf("could not read from db for key %s\n", req.Key)
 		return
 	} else if !found {
-		fmt.Printf("sent ping\n")
+		// fmt.Printf("sent ping\n")
 		lockRequestPing <- struct{}{}
 	}
 }
 
 func (node *Node) registerLockAcquireRequest(queue *[]LockRequest, pullLockRequestChan chan struct{}) {
 	for range pullLockRequestChan {
-		fmt.Printf("pullLockedChan\n")
+		// fmt.Printf("pullLockedChan\n")
 		node.mu.Lock()
-		fmt.Printf("pullLockedChan locked\n")
+		// fmt.Printf("pullLockedChan locked\n")
 		if len((*queue)) == 0 {
 			node.mu.Unlock()
 			continue
@@ -841,7 +841,7 @@ func (node *Node) registerLockAcquireRequest(queue *[]LockRequest, pullLockReque
 		} else {
 			fencingTokenValue = value.(uint64) + 1
 		}
-		fmt.Printf("fencing token value: %v\n", fencingTokenValue)
+		// fmt.Printf("fencing token value: %v\n", fencingTokenValue)
 		cmd := LockAcquireCommand{
 			Key:      req.Key,
 			ClientID: req.ClientID,
@@ -852,6 +852,6 @@ func (node *Node) registerLockAcquireRequest(queue *[]LockRequest, pullLockReque
 			},
 		}
 		node.newLogEntry(cmd)
-		fmt.Printf("added lock acquire command to the log\n")
+		// fmt.Printf("added lock acquire command to the log\n")
 	}
 }

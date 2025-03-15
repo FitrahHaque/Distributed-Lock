@@ -79,7 +79,7 @@ func (server *Server) handleClientLockCommands(conn *websocket.Conn) {
 			continue
 		}
 
-		fmt.Printf("req: %v\n", req)
+		// fmt.Printf("req: %v\n", req)
 		if req.CommandType == LockAcquire {
 			server.node.handleLockAcquireRequest(req)
 		} else if req.CommandType == LockRelease {
