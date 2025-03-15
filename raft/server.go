@@ -99,12 +99,16 @@ func (server *Server) handleClientLockCommands(conn *websocket.Conn) {
 	}
 }
 
-func (server *Server) NotifyLockAcquire(clientID string, fencingToken FencingToken) {
+func (server *Server) NotifyLockAcquire(clientID string, key string, fencingTokenValue uint64) {
 	server.wsMu.Lock()
 	conn, ok := server.wsClients[clientID]
 	server.wsMu.Unlock()
 	if ok {
 		// fmt.Printf("Conn ok sending now\n")
+		fencingToken := FencingToken{
+			Key:   key,
+			Value: fencingTokenValue,
+		}
 		lockRes := LockAcquireReply{
 			Success:      true,
 			FencingToken: fencingToken,

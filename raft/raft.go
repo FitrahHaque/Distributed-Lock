@@ -684,7 +684,7 @@ func (node *Node) applyLogEntry() error {
 				node.activeLockExpiryMonitorCancel[cmd.Key] = cancel
 				node.mu.Unlock()
 				go node.monitorLockExpiry(ctx, cmd.Key, cmd.ExpiryTime)
-				node.server.NotifyLockAcquire(cmd.ClientID, cmd.FencingToken)
+				node.server.NotifyLockAcquire(cmd.ClientID, cmd.Key, cmd.FencingToken.Value)
 				fmt.Printf("Notified Client about lock acquiring\n")
 			}
 		case LockReleaseCommand:

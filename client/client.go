@@ -2,10 +2,13 @@ package client
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -52,6 +55,7 @@ var (
 	servers       []uint64
 	responseChan  chan []byte
 	reconnectedCh chan struct{}
+	fencingToken  map[string]FencingToken
 )
 
 func selectRandomServer(serverId int64) uint64 {
@@ -214,6 +218,7 @@ func acquireLock(key string, ttl int64) {
 
 			if reply.Success {
 				log.Printf("Lock %s acquired successfully", key)
+				fencingToken[reply.FencingToken.Key] = reply.FencingToken
 				return
 			} else {
 				log.Printf("Lock %s acquisition failed, retrying...", key)
@@ -251,6 +256,44 @@ func releaseLock(key string) {
 	log.Printf("Sent lock release command: %s", data)
 }
 
+func writeData(data string, lockKey string) {
+	reqPayload := WriteRequest{
+		FencingToken: fencingToken[lockKey],
+		Data:         data,
+	}
+
+	jsonData, err := json.Marshal(reqPayload)
+	if err != nil {
+		log.Fatalf("Error marshalling JSON: %v", err)
+	}
+
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Post(dataStoreURL, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Fatalf("Error making POST request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatalf("Error reading response: %v", err)
+	}
+
+	var writeResp WriteResponse
+	if err = json.Unmarshal(body, &writeResp); err != nil {
+		log.Fatalf("Error decoding response JSON: %v", err)
+	}
+
+	if writeResp.Success {
+		fmt.Println("Write operation was successful!")
+	} else {
+		fmt.Printf("Write operation failed. HTTP status: %d\n", resp.StatusCode)
+	}
+}
+
 func PrintMenu() {
 	fmt.Println("\n\n           	                 CLIENT MENU:")
 	fmt.Println("+--------------------------------------+------------------------------------+")
@@ -260,6 +303,7 @@ func PrintMenu() {
 	fmt.Println("| 2  | connect to locking service      |      serverId upperlimit           |")
 	fmt.Println("| 3  | acquire lock                    |      lockKey, TTL (in secs)        |")
 	fmt.Println("| 4  | release lock                    |      lockKey                       |")
+	fmt.Println("| 5  | write data                      |      message, lockKey              |")
 	fmt.Println("+----+---------------------------------+------------------------------------+")
 	fmt.Println("+---------------------------------------------------------------------------+")
 	fmt.Println("")
@@ -271,7 +315,12 @@ func ClientInput(sigCh chan os.Signal) {
 		fmt.Println("SIGNAL RECEIVED")
 		os.Exit(0)
 	}()
+	if !isRunning {
+		go data_store_init()
+	}
+
 	reconnectedCh = make(chan struct{}, 1)
+	fencingToken = make(map[string]FencingToken)
 	for {
 		PrintMenu()
 		fmt.Println("WAITING FOR INPUTS..")
@@ -324,6 +373,12 @@ func ClientInput(sigCh chan os.Signal) {
 				break
 			}
 			go releaseLock(tokens[1])
+		case 5:
+			if len(tokens) < 3 {
+				fmt.Printf("Message not passed\n")
+				break
+			}
+			writeData(tokens[1], tokens[2])
 		default:
 			fmt.Printf("Invalid input")
 		}
