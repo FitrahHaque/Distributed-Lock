@@ -629,7 +629,7 @@ func (node *Node) newLogEntry(command interface{}) (bool, interface{}, error) {
 				return false, nil, fmt.Errorf("lock %s is held by someone else\n", cmd.Key)
 			}
 			fmt.Printf("Should delete the lock key %s\n", cmd.Key)
-			node.db.Delete(cmd.Key)
+			node.db.Delete(lockKey)
 			if node.activeLockExpiryMonitorCancel[cmd.Key] == nil {
 				node.mu.Unlock()
 				return false, nil, fmt.Errorf("Expiry Monitor for Lock %s could not be cancelled", cmd.Key)
@@ -660,6 +660,7 @@ func (node *Node) newLogEntry(command interface{}) (bool, interface{}, error) {
 		switch cmd := command.(type) {
 		case Read:
 			// fmt.Printf("READ v: %v", v)
+			node.mu.Unlock()
 			return node.forwardToLeader(cmd)
 		case Write:
 			node.mu.Unlock()
@@ -680,7 +681,7 @@ func (node *Node) applyLogEntry() error {
 		fmt.Printf("commit: %v\n", commit)
 		switch cmd := commit.Command.(type) {
 		case Write:
-			return node.setData(cmd.Key, cmd.Val)
+			node.setData(cmd.Key, cmd.Val)
 		case AddServer:
 			// fmt.Printf("Add server\n")
 			node.server.AddToCluster(cmd.ServerId)
@@ -694,7 +695,7 @@ func (node *Node) applyLogEntry() error {
 			now := time.Now()
 			if node.db.Exists(cmd.Key) {
 				fmt.Printf("Key %s already exists\n", cmd.Key)
-				break
+				continue
 			}
 			expiryTime := now.Add(cmd.TTL)
 			lock := LockInfo{
@@ -719,7 +720,6 @@ func (node *Node) applyLogEntry() error {
 				node.pullLockRequestChan[cmd.Key] <- struct{}{}
 			}
 			// fmt.Printf("default\n")
-			break
 		}
 	}
 	return nil
@@ -787,7 +787,9 @@ func (node *Node) monitorLockExpiry(ctx context.Context, key string, expiryTime 
 }
 
 func (node *Node) handleLockAcquireRequest(req LockRequest) {
+	fmt.Printf("handleLockAcquireRequest %v\n", req)
 	node.mu.Lock()
+	fmt.Printf("handleLockAcquireRequest locked %v\n", req)
 	if queuePtr, exists := node.pendingLockQueue[req.Key]; exists {
 		*queuePtr = append(*queuePtr, req)
 	} else {
@@ -797,6 +799,7 @@ func (node *Node) handleLockAcquireRequest(req LockRequest) {
 	if !exists {
 		lockRequestPing = make(chan struct{}, 1)
 		node.pullLockRequestChan[req.Key] = lockRequestPing
+		fmt.Printf("starting register\n")
 		go node.registerLockAcquireRequest(node.pendingLockQueue[req.Key], lockRequestPing)
 	}
 	node.mu.Unlock()
@@ -806,14 +809,16 @@ func (node *Node) handleLockAcquireRequest(req LockRequest) {
 		fmt.Printf("could not read from db for key %s\n", req.Key)
 		return
 	} else if !found {
-		// fmt.Printf("sent ping\n")
+		fmt.Printf("sent ping\n")
 		lockRequestPing <- struct{}{}
 	}
 }
 
 func (node *Node) registerLockAcquireRequest(queue *[]LockRequest, pullLockRequestChan chan struct{}) {
 	for range pullLockRequestChan {
+		fmt.Printf("pullLockedChan\n")
 		node.mu.Lock()
+		fmt.Printf("pullLockedChan locked\n")
 		if len((*queue)) == 0 {
 			node.mu.Unlock()
 			continue
@@ -836,7 +841,7 @@ func (node *Node) registerLockAcquireRequest(queue *[]LockRequest, pullLockReque
 		} else {
 			fencingTokenValue = value.(uint64) + 1
 		}
-		// fmt.Printf("fencing token value: %v\n", fencingTokenValue)
+		fmt.Printf("fencing token value: %v\n", fencingTokenValue)
 		cmd := LockAcquireCommand{
 			Key:      req.Key,
 			ClientID: req.ClientID,
@@ -847,6 +852,6 @@ func (node *Node) registerLockAcquireRequest(queue *[]LockRequest, pullLockReque
 			},
 		}
 		node.newLogEntry(cmd)
-		// fmt.Printf("added lock acquire command to the log\n")
+		fmt.Printf("added lock acquire command to the log\n")
 	}
 }

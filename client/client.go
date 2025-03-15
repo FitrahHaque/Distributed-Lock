@@ -46,48 +46,55 @@ type ConnectionReply struct {
 	Leader  int64
 }
 
-var Conn *websocket.Conn
-var ClientID string
-var servers []uint64
-var responseChan (chan []byte)
+var (
+	Conn          *websocket.Conn
+	ClientID      string
+	servers       []uint64
+	responseChan  chan []byte
+	reconnectedCh chan struct{} // Notification channel
+)
 
-func selectRandomServer() uint64 {
-	idx := rand.Intn(len(servers))
-	return servers[idx]
+func selectRandomServer(serverId int64) uint64 {
+	for {
+		idx := rand.Intn(len(servers))
+		if serverId != int64(servers[idx]) {
+			return servers[idx]
+		}
+	}
 }
 
 func connectToLeader() {
-	serverId := selectRandomServer()
+	serverId := selectRandomServer(-1)
 	for {
-		log.Printf("Attempting to connect to candidate server %d...", serverId)
+		// log.Printf("Attempting to connect to candidate server %d...", serverId)
 		err := connectToServer(serverId)
 		if err != nil {
-			log.Printf("Error connecting to server %d: %v", serverId, err)
-			serverId = selectRandomServer()
+			// log.Printf("Error connecting to server %d: %v", serverId, err)
+			serverId = selectRandomServer(int64(serverId))
 			continue
 		}
 		_, msg, err := Conn.ReadMessage()
 		if err != nil {
-			log.Printf("Error reading from server %d: %v", serverId, err)
+			// log.Printf("Error reading from server %d: %v", serverId, err)
 			Conn.Close()
-			serverId = selectRandomServer()
+			serverId = selectRandomServer(int64(serverId))
 			continue
 		}
 
 		var reply ConnectionReply
 		err = json.Unmarshal(msg, &reply)
 		if err != nil {
-			log.Printf("Error decoding connection reply from server %d: %v", serverId, err)
+			// log.Printf("Error decoding connection reply from server %d: %v", serverId, err)
 			Conn.Close()
-			serverId = selectRandomServer()
+			serverId = selectRandomServer(int64(serverId))
 			continue
 		}
 
 		if !reply.Success {
-			log.Printf("Non Leader Server %d indicated leader is %d", serverId, reply.Leader)
+			// log.Printf("Non Leader Server %d indicated leader is %d", serverId, reply.Leader)
 			Conn.Close()
 			if reply.Leader == -1 {
-				serverId = selectRandomServer()
+				serverId = selectRandomServer(int64(serverId))
 			} else {
 				serverId = uint64(reply.Leader)
 			}
@@ -102,17 +109,23 @@ func connectToLeader() {
 }
 
 func startReader() {
-	responseChan = make(chan []byte)
-	connectToLeader()
 	for {
-		_, message, err := Conn.ReadMessage()
-		if err != nil {
-			log.Printf("Connection lost: %v", err)
-			connectToLeader()
-			continue
+		responseChan = make(chan []byte)
+		connectToLeader()
+
+		reconnectedCh <- struct{}{}
+
+		for {
+			_, message, err := Conn.ReadMessage()
+			if err != nil {
+				log.Printf("Connection lost: %v", err)
+				close(responseChan)
+				Conn.Close()
+				break
+			}
+
+			responseChan <- message
 		}
-		responseChan <- message
-		fmt.Printf("Received notification: %s\n", message)
 	}
 }
 
@@ -130,56 +143,79 @@ func connectToServer(serverId uint64) error {
 
 	data, err := json.Marshal(connectionReq)
 	if err != nil {
-		fmt.Printf("json marshal error: %v\n", err)
+		// fmt.Printf("json marshal error: %v\n", err)
 		return err
 	}
 
-	log.Printf("Connecting to server %d at %v\n", serverId, url)
+	// log.Printf("Connecting to server %d at %v\n", serverId, url)
 
 	err = Conn.WriteMessage(websocket.TextMessage, data)
 	if err != nil {
 		return err
 	}
-	log.Printf("Sent client ID: %s", ClientID)
+	// log.Printf("Sent client ID: %s", ClientID)
 
 	return nil
 }
 
-func acquireLock(key string, n int64) {
-	if Conn == nil {
-		fmt.Printf("locking Service connection missing\n")
-		return
-	}
-	lockReq := LockRequest{
-		CommandType: LockAcquire,
-		Key:         key,
-		ClientID:    ClientID,
-		TTL:         time.Duration(n * int64(time.Second)),
-	}
-
-	data, err := json.Marshal(lockReq)
-	if err != nil {
-		fmt.Printf("json marshal error: %v\n", err)
-		return
-	}
-
-	err = Conn.WriteMessage(websocket.TextMessage, data)
-	if err != nil {
-		fmt.Printf("error sending lock command: %v\n", err)
-		return
-	}
-	log.Printf("Sent lock acquire command: %s", data)
-
+func acquireLock(key string, ttl int64) {
 	for {
-		message := <-responseChan
-		var reply LockAcquireReply
-		err = json.Unmarshal(message, &reply)
-		if err != nil {
-			log.Printf("Error decoding LockCommand: %v", err)
-			continue
+		lockReq := LockRequest{
+			CommandType: LockAcquire,
+			Key:         key,
+			ClientID:    ClientID,
+			TTL:         time.Duration(ttl) * time.Second,
 		}
-		fmt.Printf("Response : %v\n", reply)
-		return
+
+		data, err := json.Marshal(lockReq)
+		if err != nil {
+			log.Printf("json marshal error: %v", err)
+			return
+		}
+
+		// Retry loop for sending requests
+		for {
+			if Conn == nil {
+				// log.Println("Waiting for reconnection...")
+				time.Sleep(time.Second)
+				continue
+			}
+			err := Conn.WriteMessage(websocket.TextMessage, data)
+			if err != nil {
+				log.Printf("error sending lock command: %v", err)
+				time.Sleep(time.Second)
+				continue
+			}
+			log.Printf("Sent lock acquire command: %s", data)
+			break
+		}
+
+		select {
+		case message, ok := <-responseChan:
+			if !ok {
+				// log.Println("Connection lost, waiting for reconnection...")
+				<-reconnectedCh
+				continue
+			}
+
+			var reply LockAcquireReply
+			err = json.Unmarshal(message, &reply)
+			if err != nil {
+				log.Printf("Invalid response: %v", err)
+				continue
+			}
+
+			if reply.Success {
+				log.Printf("Lock %s acquired successfully", key)
+				return
+			} else {
+				log.Printf("Lock %s acquisition failed, retrying...", key)
+				time.Sleep(2 * time.Second)
+			}
+
+		case <-time.After(1000 * time.Second):
+			log.Println("Timed out waiting for response, retrying...")
+		}
 	}
 }
 
@@ -228,6 +264,7 @@ func ClientInput(sigCh chan os.Signal) {
 		fmt.Println("SIGNAL RECEIVED")
 		os.Exit(0)
 	}()
+	reconnectedCh = make(chan struct{}, 1)
 	for {
 		PrintMenu()
 		fmt.Println("WAITING FOR INPUTS..")

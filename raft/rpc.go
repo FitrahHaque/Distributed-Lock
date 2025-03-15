@@ -118,7 +118,8 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesRepl
 				case LockReleaseCommand:
 					fmt.Printf("Called Lock release on follower %v\n", cmd)
 					var lockInfo LockInfo
-					found, readErr := node.readFromStorage(cmd.Key, &lockInfo)
+					lockKey := fmt.Sprintf("%s%s", LOCKING_KEY_PREFIX, cmd.Key)
+					found, readErr := node.readFromStorage(lockKey, &lockInfo)
 					if readErr != nil {
 						fmt.Printf("lock %v read fail\n", cmd.Key)
 						reply.Success = false
@@ -132,7 +133,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesRepl
 						reply.Success = false
 						return fmt.Errorf("lock %s is held by someone else\n", cmd.Key)
 					}
-					node.db.Delete(cmd.Key)
+					node.db.Delete(lockKey)
 					fmt.Printf("Successfully deleted all traces of lock %s\n", cmd.Key)
 				}
 

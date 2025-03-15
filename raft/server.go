@@ -63,6 +63,9 @@ var upgrader = websocket.Upgrader{
 
 func (server *Server) handleClientLockCommands(conn *websocket.Conn) {
 	for {
+		if conn == nil {
+			break
+		}
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			log.Printf("Error reading from websocket for client: %v", err)
