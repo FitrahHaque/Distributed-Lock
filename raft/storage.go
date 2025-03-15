@@ -52,3 +52,14 @@ func (db *Database) Exists(key string) bool {
 	_, ok := db.kv[key]
 	return ok
 }
+
+func (db *Database) Keys() []string {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	keys := make([]string, 0, len(db.kv))
+	for k := range db.kv {
+		keys = append(keys, k)
+	}
+	// fmt.Printf("KEYS: %v\n", keys)
+	return keys
+}

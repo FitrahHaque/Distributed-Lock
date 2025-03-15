@@ -10,7 +10,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const FENCING_TOKEN_PREFIX string = "fencing_token"
+const FENCING_TOKEN_PREFIX string = "FENCING_TOKEN_"
+const LOCKING_KEY_PREFIX string = "LOCK_"
 
 type LockCommandType int
 

@@ -282,10 +282,6 @@ func ServerInput(sigCh chan os.Signal) {
 				fmt.Println("invalid leader id")
 				break
 			}
-			if err != nil {
-				fmt.Println("invalid leader port")
-				break
-			}
 			err = server.RequestToJoinCluster(uint64(leaderId), tokens[2])
 			if err != nil {
 				fmt.Printf("err: %v\n", err)
