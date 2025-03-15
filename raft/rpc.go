@@ -144,6 +144,7 @@ func (node *Node) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesRepl
 			// 	fmt.Printf("New Entries: %v\n", args.Entries)
 			// }
 			if args.LeaderCommit > node.commitLength {
+				fmt.Printf("commiited\n")
 				node.commitLength = uint64(math.Min(float64(args.LeaderCommit), float64((len(node.log)))))
 				node.newCommitReady <- struct{}{}
 			}

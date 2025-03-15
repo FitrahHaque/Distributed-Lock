@@ -157,16 +157,42 @@ func (server *Server) WSHandler(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 		return
 	}
-	clientID := string(msg)
-
-	server.wsMu.Lock()
-	if server.wsClients == nil {
-		server.wsClients = make(map[string]*websocket.Conn)
+	var req ConnectionRequest
+	err = json.Unmarshal(msg, &req)
+	if err != nil {
+		log.Printf("Error decoding Connection Request: %v", err)
+		return
 	}
-	server.wsClients[clientID] = conn
-	server.wsMu.Unlock()
-	fmt.Printf("WebSocket connection established for client: %s\n", clientID)
-	go server.handleClientLockCommands(conn)
+
+	leader, _, isLeader := server.CheckLeader()
+	var reply ConnectionReply
+	if isLeader {
+		reply.Success = true
+		reply.Leader = int64(server.id)
+		fmt.Printf("Found the leader\n")
+		server.wsMu.Lock()
+		if server.wsClients == nil {
+			server.wsClients = make(map[string]*websocket.Conn)
+		}
+		server.wsClients[req.ClientID] = conn
+		server.wsMu.Unlock()
+		fmt.Printf("WebSocket connection established for client: %s\n", req.ClientID)
+		go server.handleClientLockCommands(conn)
+	} else {
+		fmt.Printf("Did not find the leader\n")
+		reply.Success = false
+		reply.Leader = leader
+	}
+	data, err := json.Marshal(reply)
+	if err != nil {
+		fmt.Printf("json marshal error: %v\n", err)
+		return
+	}
+	err = conn.WriteMessage(websocket.TextMessage, data)
+	if err != nil {
+		fmt.Printf("Write failed\n")
+		return
+	}
 }
 
 // func (server *Server)

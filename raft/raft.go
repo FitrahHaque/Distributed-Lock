@@ -119,7 +119,7 @@ func (node *Node) sendCommit() {
 		}
 		node.mu.Unlock()
 		for i, entry := range pendingCommitEntries {
-			// fmt.Printf("Commited entry for node Id: %d, entry: %v\n", node.id, entry.Command)
+			fmt.Printf("Committed entry for node Id: %d, index %d,  entry: %v\n", node.id, lastAppliedSaved+uint64(i)+1, entry.Command)
 			node.commitChan <- CommitEntry{
 				Command: entry.Command,
 				Index:   lastAppliedSaved + uint64(i) + 1,
@@ -334,10 +334,10 @@ func (node *Node) leaderSendAppendEntries() {
 			if err := node.server.RPC(peer, "RaftNode.AppendEntries", args, &reply); err == nil {
 				node.mu.Lock()
 				defer node.mu.Unlock()
-				// if len(entries) > 0 {
-				// 	// fmt.Printf("Entries Sent on node %d: %v\n", peer, entries)
-				// 	fmt.Printf("Reply from peer %d: success = %v\n", peer, reply.Success)
-				// }
+				if len(entries) > 0 {
+					fmt.Printf("Entries Sent on node %d: %v\n", peer, entries)
+					fmt.Printf("Reply from peer %d: success = %v\n", peer, reply.Success)
+				}
 				if reply.Term > leadershipTerm {
 					node.becomeFollower(reply.Term, -1)
 					return
@@ -347,7 +347,7 @@ func (node *Node) leaderSendAppendEntries() {
 						node.nextIndex[peer] = nextIndexSaved + uint64(len(entries))
 						node.matchedIndex[peer] = node.nextIndex[peer] - 1
 						commitLengthSaved := node.commitLength
-						for i := node.commitLength + 1; i <= uint64(len(node.log)); i++ {
+						for i := commitLengthSaved + 1; i <= uint64(len(node.log)); i++ {
 							if node.log[i-1].Term == node.currentTerm {
 								matchCount := 1
 								for p := range node.peerList.peerSet {
@@ -361,6 +361,7 @@ func (node *Node) leaderSendAppendEntries() {
 							}
 						}
 						if commitLengthSaved != node.commitLength {
+							fmt.Printf("commit length: %d\n", node.commitLength)
 							// fmt.Printf("[LeaderSendAppendEntries Reply from peer %d] matchIndex[peer], nextIndex[peer], rn.commitIndex = %v, %v, %v\n", peer, node.matchedIndex[peer], node.nextIndex[peer], node.commitLength)
 							node.newCommitReady <- struct{}{}
 							node.trigger <- struct{}{}
@@ -621,6 +622,7 @@ func (node *Node) applyLogEntry() error {
 		//do we need a lock? - logic
 		// fmt.Printf("Collect Commits from node %d, entry: %+cmd\n", i, commit)
 		// logtest(server.GetServerId(), "collectCommits (%d) got %+cmd", server.GetServerId(), commit)
+		fmt.Printf("commit: %v\n", commit)
 		switch cmd := commit.Command.(type) {
 		case Write:
 			return node.setData(cmd.Key, cmd.Val)
@@ -636,7 +638,8 @@ func (node *Node) applyLogEntry() error {
 			fmt.Printf("Lock Acquire Command\n")
 			now := time.Now()
 			if node.db.Exists(cmd.Key) {
-				return fmt.Errorf("lock key %s cannot be acquired by another client before it is deleted!", cmd.Key)
+				fmt.Printf("Key %s already exists\n", cmd.Key)
+				break
 			}
 			expiryTime := now.Add(cmd.TTL)
 			lock := LockInfo{

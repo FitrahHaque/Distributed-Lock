@@ -53,6 +53,14 @@ type LockAcquireReply struct {
 	Success      bool         `json:"success"`
 	FencingToken FencingToken `json:"fencingToken"`
 }
+type ConnectionRequest struct {
+	ClientID string `json:"clientID"`
+}
+
+type ConnectionReply struct {
+	Success bool  `json:"success"`
+	Leader  int64 `json:"leader"`
+}
 
 type Write struct {
 	Key string

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
@@ -36,10 +37,86 @@ type LockAcquireReply struct {
 	FencingToken FencingToken
 }
 
+type ConnectionRequest struct {
+	ClientID string `json:"clientID"`
+}
+
+type ConnectionReply struct {
+	Success bool
+	Leader  int64
+}
+
 var Conn *websocket.Conn
 var ClientID string
+var servers []uint64
+var responseChan (chan []byte)
 
-func connectToLockingService(serverId int) error {
+func selectRandomServer() uint64 {
+	idx := rand.Intn(len(servers))
+	return servers[idx]
+}
+
+func connectToLeader() {
+	serverId := selectRandomServer()
+	for {
+		log.Printf("Attempting to connect to candidate server %d...", serverId)
+		err := connectToServer(serverId)
+		if err != nil {
+			log.Printf("Error connecting to server %d: %v", serverId, err)
+			serverId = selectRandomServer()
+			continue
+		}
+		_, msg, err := Conn.ReadMessage()
+		if err != nil {
+			log.Printf("Error reading from server %d: %v", serverId, err)
+			Conn.Close()
+			serverId = selectRandomServer()
+			continue
+		}
+
+		var reply ConnectionReply
+		err = json.Unmarshal(msg, &reply)
+		if err != nil {
+			log.Printf("Error decoding connection reply from server %d: %v", serverId, err)
+			Conn.Close()
+			serverId = selectRandomServer()
+			continue
+		}
+
+		if !reply.Success {
+			log.Printf("Non Leader Server %d indicated leader is %d", serverId, reply.Leader)
+			Conn.Close()
+			if reply.Leader == -1 {
+				serverId = selectRandomServer()
+			} else {
+				serverId = uint64(reply.Leader)
+			}
+			continue
+		}
+
+		if reply.Success {
+			log.Printf("Connected to leader %d", serverId)
+			return
+		}
+	}
+}
+
+func startReader() {
+	responseChan = make(chan []byte)
+	connectToLeader()
+	for {
+		_, message, err := Conn.ReadMessage()
+		if err != nil {
+			log.Printf("Connection lost: %v", err)
+			connectToLeader()
+			continue
+		}
+		responseChan <- message
+		fmt.Printf("Received notification: %s\n", message)
+	}
+}
+
+func connectToServer(serverId uint64) error {
 	port := fmt.Sprintf("%d", 50050+serverId)
 	url := fmt.Sprintf("ws://localhost:%s/ws", port)
 	var err error
@@ -47,13 +124,24 @@ func connectToLockingService(serverId int) error {
 	if err != nil {
 		return err
 	}
+	connectionReq := ConnectionRequest{
+		ClientID: ClientID,
+	}
 
-	log.Printf("Connected to server %d at %v\n", serverId, url)
-	err = Conn.WriteMessage(websocket.TextMessage, []byte(ClientID))
+	data, err := json.Marshal(connectionReq)
+	if err != nil {
+		fmt.Printf("json marshal error: %v\n", err)
+		return err
+	}
+
+	log.Printf("Connecting to server %d at %v\n", serverId, url)
+
+	err = Conn.WriteMessage(websocket.TextMessage, data)
 	if err != nil {
 		return err
 	}
 	log.Printf("Sent client ID: %s", ClientID)
+
 	return nil
 }
 
@@ -83,28 +171,21 @@ func acquireLock(key string, n int64) {
 	log.Printf("Sent lock acquire command: %s", data)
 
 	for {
-		_, message, err := Conn.ReadMessage()
-		if err != nil {
-			fmt.Printf("read error: %v\n", err)
-			return
-		}
-		fmt.Printf("Received notification: %s\n", message)
+		message := <-responseChan
 		var reply LockAcquireReply
 		err = json.Unmarshal(message, &reply)
 		if err != nil {
 			log.Printf("Error decoding LockCommand: %v", err)
 			continue
 		}
-
 		fmt.Printf("Response : %v\n", reply)
-
 		return
 	}
 }
 
 func releaseLock(key string) {
 	if Conn == nil {
-		fmt.Printf("locking Service connection missing\n")
+		fmt.Printf("locking service connection missing\n")
 		return
 	}
 	lockReq := LockRequest{
@@ -133,7 +214,7 @@ func PrintMenu() {
 	fmt.Println("| Sr |  USER COMMANDS                  |      ARGUMENTS                     |")
 	fmt.Println("+----+---------------------------------+------------------------------------+")
 	fmt.Println("| 1  | create client                   |      clientId                      |")
-	fmt.Println("| 2  | connect to locking service      |      serverId                      |")
+	fmt.Println("| 2  | connect to locking service      |      serverId upperlimit           |")
 	fmt.Println("| 3  | acquire lock                    |      lockKey, TTL (in secs)        |")
 	fmt.Println("| 4  | release lock                    |      lockKey                       |")
 	fmt.Println("+----+---------------------------------+------------------------------------+")
@@ -170,18 +251,18 @@ func ClientInput(sigCh chan os.Signal) {
 			break
 		case 2:
 			if len(tokens) < 2 {
-				fmt.Println("Locking Server port not passed")
+				fmt.Println("Locking ServerId range not passed")
 				break
 			}
-			serverId, err := strconv.Atoi(tokens[1])
+			serverIdRange, err := strconv.Atoi(tokens[1])
 			if err != nil {
 				fmt.Println("invalid number of peers")
 				break
 			}
-			if err := connectToLockingService(serverId); err != nil {
-				fmt.Printf("error sending client ID: %v", err)
-				break
+			for i := 0; i < serverIdRange; i++ {
+				servers = append(servers, uint64(i))
 			}
+			go startReader()
 		case 3:
 			if len(tokens) < 3 {
 				fmt.Printf("Lock Key and TTL not passed")
