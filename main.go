@@ -36,7 +36,7 @@ func main() {
 
 	for {
 		fmt.Println("WAITING FOR INPUTS..")
-		fmt.Println("Press\nS for Server\nC for Client")
+		fmt.Println("Press\nS for Server\nC for Client\nD for Data Store\n")
 
 		reader := bufio.NewReader(os.Stdin)
 		input, _ = reader.ReadString('\n')
@@ -46,6 +46,8 @@ func main() {
 			client.ClientInput(sigCh)
 		case "S":
 			raft.ServerInput(sigCh)
+		case "D":
+			go client.Data_store_init()
 		default:
 			fmt.Println("Invalid Command")
 		}

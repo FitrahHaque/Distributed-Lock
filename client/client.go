@@ -305,7 +305,6 @@ func PrintMenu() {
 	fmt.Println("| 3  | acquire lock                    |      lockKey, TTL (in secs)        |")
 	fmt.Println("| 4  | release lock                    |      lockKey                       |")
 	fmt.Println("| 5  | write data                      |      message, lockKey              |")
-	fmt.Println("| 6  | start data server               |                                    |")
 	fmt.Println("+----+---------------------------------+------------------------------------+")
 	fmt.Println("+---------------------------------------------------------------------------+")
 	fmt.Println("")
@@ -379,8 +378,6 @@ func ClientInput(sigCh chan os.Signal) {
 				break
 			}
 			writeData(tokens[1], tokens[2])
-		case 6:
-			go data_store_init()
 		default:
 			fmt.Printf("Invalid input")
 		}

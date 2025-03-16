@@ -94,7 +94,7 @@ func writeHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func data_store_init() {
+func Data_store_init() {
 	maxFencingTokenSoFar = make(map[string]FencingToken)
 	http.HandleFunc("/write", writeHandler)
 	log.Printf("Server is running on port %d...\n", 8000)
