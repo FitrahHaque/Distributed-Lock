@@ -217,7 +217,7 @@ func acquireLock(key string, ttl int64) {
 			}
 
 			if reply.Success {
-				log.Printf("Lock %s acquired successfully", key)
+				log.Printf("Lock %s acquired successfully with token %v\n", key, fencingToken)
 				fencingToken[reply.FencingToken.Key] = reply.FencingToken
 				return
 			} else {
