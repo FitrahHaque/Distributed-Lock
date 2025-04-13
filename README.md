@@ -152,4 +152,4 @@ Initially, `client1` acquires the lock. Now simulate a leader crash (assuming th
 # Press Control-C-Enter to crash the leader.
 ```
 
-Clients will automatically reconnect to a newly elected leader. Verify that pending lock requests are processed correctly by checking logs across terminals.
+Clients will automatically reconnect to a newly elected leader. Verify that pending lock requests are processed correctly by checking logs across terminals. Even though the request was initially queued on the previous leader, the handoff allows the new leader to process the pending requests smoothly.
