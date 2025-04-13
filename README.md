@@ -15,7 +15,7 @@ git clone https://github.com/FitrahHaque/Distributed-Lock
 ### 2. Navigate to the Project Directory
 
 ```bash
-cd Raft-Consensus
+cd Distributed-Lock-main
 ```
 
 ### 3. Install Dependencies
@@ -38,7 +38,7 @@ Follow the steps below to run a demonstration of the distributed locking mechani
 
 ### 1. Start the Data Store
 
-Open a new terminal window within the `Raft-Consensus` directory and execute:
+Open a new terminal window within the `main.go` file's directory and execute:
 
 ```bash
 go run main.go
