@@ -1,4 +1,23 @@
-# Getting Started
+# Table of Contents
+
+- [Getting Started](#getting-started)
+- [Demo](#demo)
+- [What is a Distributed Lock?](#what-is-a-distributed-lock)
+- [Proposed Solution](#proposed-solution)
+- [Functional Capabilities](#functional-capabilities)
+- [System Design](#system-design)
+  - [Core Components](#core-components)
+- [APIs](#apis)
+  - [HTTP Protocol](#http-protocol)
+  - [WebSocket Protocol](#websocket-protocol)
+  - [Remote Procedure Call (RPC) Protocol](#remote-procedure-call-rpc-protocol)
+- [Implementation Detail](#implementation-detail)
+- [How A Lock is Acquired](#how-a-lock-is-acquired)
+- [How A Lock is Released](#how-a-lock-is-released)
+- [Fault Tolerance: Graceful Lock Recovery from Leader Crashes](#fault-tolerance-graceful-lock-recovery-from-leader-crashes)
+- [Challenges, Solutions & Further Improvement](#challenges-solutions--further-improvement)
+- [References](#references)
+
 
 Follow these steps to get the Locking Service application running on your machine.
 
