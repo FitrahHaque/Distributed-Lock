@@ -18,7 +18,7 @@
 - [Challenges, Solutions & Further Improvement](#challenges-solutions--further-improvement)
 - [References](#references)
 
-
+# Getting Started  
 Follow these steps to get the Locking Service application running on your machine.
 
 #### 1. Clone the Repository
